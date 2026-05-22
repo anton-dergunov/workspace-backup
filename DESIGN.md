@@ -161,7 +161,7 @@ remote: gdrive
 path:   project-backups
 ```
 
-Multiple destinations may be specified globally and per source.
+Multiple destinations may be specified per job.
 
 All remotes must exist in rclone configuration before the backup runs.
 
@@ -188,27 +188,26 @@ project-backup/
 
 ---
 
-# Source Directories
+# Backup Jobs
 
-The system supports one or more source directories.
+The system is configured as a list of backup jobs.
 
-Each source directory:
-- is backed up as a separate archive
-- may specify its own set of cloud destinations
-- uses the source `name` field in archive filenames
-- inherits global destinations if no per-source destinations are set
+Each job:
+- has a name (used in archive filenames and state tracking)
+- has a source directory to back up
+- has one or more explicit destinations
 
-Example sources:
+Example:
 
 ```text
-~/projects
-~/research
-~/notes
+name:   projects
+source: ~/projects
+destinations: [gdrive:project-backups]
 ```
 
-All source directories must be explicitly listed in configuration.
+All jobs must be explicitly listed in configuration.
 
-The backup recursively processes the entire tree of each source directory.
+The backup recursively processes the entire source tree for each job.
 
 ---
 
@@ -415,7 +414,7 @@ No permanent staging directory should exist.
 
 # Archive Naming
 
-Archives are named using the source `name` field and the backup timestamp.
+Archives are named using the job `name` field and the backup timestamp.
 
 Example:
 
@@ -482,7 +481,7 @@ Example `state.json`:
 {
   "schema_version": 1,
   "updated_at": "2026-05-22T13:00:05Z",
-  "sources": {
+  "jobs": {
     "projects": {
       "path": "~/projects",
       "last_backup": {
@@ -532,7 +531,7 @@ Example `state.json`:
 Fields:
 - `schema_version` — for future migration
 - `updated_at` — ISO 8601 UTC timestamp of last state write
-- `sources` — keyed by source `name`
+- `jobs` — keyed by job `name`
 - `last_backup` — used for growth detection on the next run
 - `history` — ordered list used for retention policy decisions
 - `retention_bucket` — `daily`, `weekly`, `monthly`, or `yearly`
@@ -554,7 +553,7 @@ Meaning:
 - if backup size exceeds 150% of previous size
 - warning should trigger
 
-Growth is tracked per source independently.
+Growth is tracked per job independently.
 
 ---
 
@@ -653,7 +652,7 @@ Keep:
 
 Older backups should be automatically removed from all destinations.
 
-Retention is applied per source independently.
+Retention is applied per job independently.
 
 ---
 
@@ -675,24 +674,16 @@ No opaque repositories.
 
 # Configuration File
 
-## Multi-Source, Multi-Destination Example
-
 ```yaml
-# Global default destinations — used by any source that does not
-# specify its own destinations list.
-destinations:
-  - remote: gdrive
-    path: workspace-backups
-
-# Source directories to back up.
-sources:
+jobs:
   - name: projects
-    path: ~/projects
-    # Inherits global destinations.
+    source: ~/projects
+    destinations:
+      - remote: gdrive
+        path: project-backups
 
   - name: research
-    path: ~/research
-    # Overrides global destinations for this source only.
+    source: ~/research
     destinations:
       - remote: gdrive
         path: research-backups
@@ -700,8 +691,7 @@ sources:
         path: backups/research
 
   - name: notes
-    path: ~/notes
-    # Destinations can point to a completely different remote.
+    source: ~/notes
     destinations:
       - remote: dropbox
         path: /Backups/notes
@@ -725,14 +715,6 @@ reports:
 logs:
   retention_days: 90
 ```
-
-## Notes on Destination Resolution
-
-- If a source has no `destinations` key, global `destinations` are used.
-- If a source has an explicit `destinations` list, it completely replaces the
-  global list for that source (no merging).
-- At least one destination must resolve for each source, or the run aborts.
-- All referenced remotes must exist in rclone configuration.
 
 ---
 
