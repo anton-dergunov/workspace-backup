@@ -1,36 +1,31 @@
-# Workspace Backup System Design
+# Workspace Backup — Design
 
-Lightweight source-oriented backup system for research, ML, and software engineering workspaces. Recursive filtering, dry-run inspection, archive-based backups, retention policies, and cloud upload via rclone.
+Lightweight Python orchestrator on top of restic for backing up source code,
+ML projects, and research workspaces. Provides config-driven jobs, a
+developer-friendly dry-run, safety guardrails, structured logging, and
+scheduling management — all delegating actual storage to restic.
 
 ## Overview
 
-This project implements a lightweight, transparent, inspectable backup system for source-code-oriented project directories.
+This project is a thin orchestration layer on top of restic.
 
-The system is designed primarily for:
+It is designed for:
 - ML engineers
 - research engineers
 - software engineers
 - data scientists
 
-The goal is NOT to create a generic enterprise backup solution.
+The goal is NOT to implement backup storage or archiving logic.
 
 Instead, the goal is:
-- reliable cloud backup
-- highly inspectable file filtering
-- dry-run visibility
-- simple restore
-- lightweight architecture
-- transparent storage
-- strong configurability
-- easy customization
+- own the job configuration (what to back up, where)
+- provide a clear dry-run for curating exclude patterns
+- enforce safety guardrails before and after each backup
+- manage logs and notifications
+- handle macOS scheduling
 
-The system should integrate cleanly with:
-- Git repositories
-- ML experiments
-- research projects
-- mixed-language codebases
-- local scripts
-- prototype projects
+Everything else — storage format, deduplication, encryption, retention,
+restore, state — is delegated to restic.
 
 ---
 
@@ -39,150 +34,97 @@ The system should integrate cleanly with:
 ## 1. Transparency
 
 The system must clearly show:
-- what is included
-- what is excluded
-- backup sizes
-- largest files
-- filtering reasons
-
-The user must never feel uncertain about:
-- which files are uploaded
+- which files are included and excluded
 - why files are excluded
-- how much data is stored
-
----
+- backup sizes and largest files
+- guardrail warnings
 
 ## 2. Simplicity
 
-The system should:
 - remain understandable
 - avoid enterprise complexity
-- use plain archives
-- avoid opaque snapshot formats
-
-The backup contents should remain easy to inspect manually.
-
----
+- delegate aggressively to restic
+- keep the orchestrator small
 
 ## 3. Configurability
 
 All important behavior must be configurable:
-- thresholds
-- notifications
-- retention
-- exclusions
-- remote names
-- paths
+- jobs (source, repository, destinations)
+- exclude patterns
+- guardrail thresholds
+- schedule interval
+- notification and logging settings
 
 No hardcoded magic numbers.
 
----
-
 ## 4. Safety
 
-The system should:
-- detect suspicious backup growth
-- warn about unexpectedly large files
-- support dry-run inspection
-- minimize accidental uploads
-
----
+- pre-backup: flag large files before they are uploaded
+- post-backup: detect unexpected size growth, new file extensions, file count jumps
+- support dry-run inspection before any real backup
 
 ## 5. Minimal Dependencies
 
-The system should reuse mature tools where appropriate:
-- rclone for cloud transport
-- pathspec for gitignore semantics
+External tools:
+- **restic** — all backup storage, deduplication, encryption, retention, restore
+- **rclone** — cloud transport backend for restic (configured separately)
 
-The orchestration layer should remain lightweight Python code.
+Python layer:
+- **pathspec** — apply exclude patterns in dry-run mode (without a repo)
+- **PyYAML** — config parsing
+- optionally **rich**, **humanize** for nicer output
 
 ---
 
 # Architecture
 
-## Main Components
+## Components
 
-### 1. Python Orchestration Script
+### backup.py
 
-Responsible for:
-- recursive scanning
-- filtering
-- reporting
-- archive creation
-- retention policy
-- notifications
-- rclone invocation
+Single entry point. Subcommands:
 
-Example:
-
-```text
-backup.py
+```
+backup.py dry-run [--job name]     scan source, show included/excluded files
+backup.py run [--job name]         run backup jobs
+backup.py schedule install         create and load launchd agent
+backup.py schedule uninstall       unload and remove launchd agent
+backup.py schedule status          show scheduling state
 ```
 
----
+### restic
 
-### 2. rclone
+Handles everything storage-related:
+- chunked, deduplicated, encrypted storage
+- snapshot management
+- retention policy (forget + prune)
+- restore
+- repository state (no separate state.json needed)
 
-Responsible for:
-- cloud upload
-- authentication
-- retries
-- remote access
-- cloud transport
+### rclone
 
-The Python layer should treat rclone as a transport backend.
-
-All cloud remotes must already be configured in rclone before use.
-
-The system does not manage rclone authentication.
-
----
-
-### 3. Cloud Destinations
-
-The system supports any rclone-compatible backend:
-- Google Drive
-- S3
-- Backblaze B2
-- Dropbox
-- SFTP servers
-- any other rclone remote
-
-A destination is a pair:
-
-```text
-(rclone_remote_name, remote_path)
-```
-
-Example:
-
-```text
-remote: gdrive
-path:   project-backups
-```
-
-Multiple destinations may be specified per job.
-
-All remotes must exist in rclone configuration before the backup runs.
+Cloud transport for restic. Configured manually by the user before first use.
+The orchestrator never invokes rclone directly — restic uses it as a backend
+via `rclone:<remote>:<path>` repository URLs.
 
 ---
 
 # Directory Layout
 
-## Proposed Repository Structure
-
-```text
-project-backup/
+```
+workspace-backup/
 ├── backup.py
 ├── requirements.txt
 ├── README.md
+├── CLAUDE.md
 ├── config/
-│   ├── config.yaml
-│   └── global.backupignore
-├── state.json          ← local state cache (see Backup State section)
+│   └── config.yaml
+├── excludes.txt          ← restic-format global exclude patterns
 ├── logs/
-│   ├── latest.log
+│   ├── latest.log        ← symlink to most recent log
 │   └── history/
+│       ├── 2026-05-22_13-00-00.log
+│       └── 2026-05-23_13-00-00.log
 └── tests/
 ```
 
@@ -190,530 +132,311 @@ project-backup/
 
 # Backup Jobs
 
-The system is configured as a list of backup jobs.
-
-Each job:
-- has a name (used in archive filenames and state tracking)
-- has a source directory to back up
-- has one or more explicit destinations
-
-Example:
-
-```text
-name:   projects
-source: ~/projects
-destinations: [gdrive:project-backups]
-```
-
-All jobs must be explicitly listed in configuration.
-
-The backup recursively processes the entire source tree for each job.
-
----
-
-# Filtering System
-
-## Filtering Philosophy
-
-The filtering system should behave similarly to `.gitignore`.
-
-The system uses:
-
-```text
-.backupignore
-```
-
-files recursively throughout the directory tree.
-
----
-
-# Recursive Semantics
-
-Each directory may contain:
-
-```text
-.backupignore
-```
-
-Rules apply:
-- to the current directory
-- recursively to descendants
-
-Child `.backupignore` files augment parent rules.
-
----
-
-# Syntax
-
-The syntax must follow exact `.gitignore` semantics.
-
-Examples:
-
-```text
-# Ignore Python caches
-__pycache__/
-*.pyc
-
-# Ignore ML artifacts
-wandb/
-checkpoints/
-*.ckpt
-*.pt
-
-# Ignore environments
-.venv/
-env/
-node_modules/
-
-# Re-include specific file
-!checkpoints/example-small.pt
-```
-
----
-
-# Parser Library
-
-Use:
-
-```text
-pathspec
-```
-
-Specifically:
-
-```python
-pathspec.PathSpec.from_lines("gitwildmatch", patterns)
-```
-
-Do NOT implement gitignore parsing manually.
-
----
-
-# Dry Run Mode
-
-The system must support:
-
-```bash
-python backup.py --dry-run
-```
-
-This mode performs:
-- recursive scan
-- filtering
-- reporting
-
-WITHOUT:
-- archive creation
-- uploads
-
----
-
-# Dry Run Output
-
-The dry run output should include:
-
-## Included Files
-
-Sorted list of included files.
-
-Example:
-
-```text
-# Included Files:
-repo1/main.py
-repo2/train.py
-```
-
----
-
-## Excluded Files
-
-Sorted list of excluded files.
-
-Example:
-
-```text
-# Excluded Files:
-repo/checkpoints/model.ckpt
-repo/.venv/bin/python
-```
-
----
-
-## Statistics
-
-Example:
-
-```text
-# Statistics
-
-Included:
-    12433 files
-    2.1 GB
-
-Excluded:
-    88192 files
-    48 GB
-```
-
----
-
-## Largest Included Files
-
-Example:
-
-```text
-Largest Included Files:
-    512 MB  repo/data/sample.parquet
-    220 MB  repo/model-small.pt
-```
-
----
-
-## Largest Excluded Files
-
-Example:
-
-```text
-Largest Excluded Files:
-    42 GB   repo/checkpoints/full.ckpt
-    12 GB   repo/.venv/libtorch.so
-```
-
----
-
-# Backup Archive
-
-## Archive Format
-
-Preferred format:
-
-```text
-tar.gz
-```
-
-Reasoning:
-- portable
-- inspectable
-- simple
-- universally supported
-
----
-
-# Temporary Staging
-
-Use:
-
-```python
-tempfile.TemporaryDirectory()
-```
-
-No permanent staging directory should exist.
-
----
-
-# Archive Naming
-
-Archives are named using the job `name` field and the backup timestamp.
-
-Example:
-
-```text
-projects-backup-2026-05-22_18-30-00.tar.gz
-research-backup-2026-05-22_18-30-00.tar.gz
-```
-
-Pattern:
-
-```text
-{source_name}-backup-{YYYY}-{MM}-{DD}_{HH}-{MM}-{SS}.tar.gz
-```
-
----
-
-# Upload Mechanism
-
-Use rclone.
-
-Each archive is uploaded to all configured destinations for its source.
-
-Example:
-
-```bash
-rclone copy projects-backup-2026-05-22_18-30-00.tar.gz gdrive:project-backups
-rclone copy projects-backup-2026-05-22_18-30-00.tar.gz s3-backup:backups/projects
-```
-
----
-
-# Backup State
-
-## Decision: Store State on Remote, Cache Locally
-
-The state file tracks what archives exist on each remote, historical sizes, and
-retention bookkeeping. Storing it only locally creates a serious gap: if the
-machine is lost or rebuilt, the state is gone — but the archives on the remotes
-are not. The next run has no knowledge of existing backups and cannot apply
-retention policy or detect growth anomalies.
-
-Because the state describes what is *on the remote*, it belongs *on the remote*.
-
-**Design:**
-
-- After each successful backup, upload a small `state.json` sidecar to every
-  destination path where archives were written.
-- Also maintain a local cache (`state.json` in the project config directory) to
-  avoid a network round-trip on every run.
-- On startup: if local cache is absent or stale, download `state.json` from the
-  primary destination to restore it.
-- The remote copy is authoritative. The local copy is a performance cache.
-
-This adds negligible overhead (state files are a few KB) and makes the system
-resilient to machine loss.
-
----
-
-## State File Format
-
-Example `state.json`:
-
-```json
-{
-  "schema_version": 1,
-  "updated_at": "2026-05-22T13:00:05Z",
-  "jobs": {
-    "projects": {
-      "path": "~/projects",
-      "last_backup": {
-        "timestamp": "2026-05-22T13:00:00Z",
-        "archive_name": "projects-backup-2026-05-22_13-00-00.tar.gz",
-        "size_bytes": 2254857830,
-        "file_count": 12433,
-        "uploads": [
-          { "remote": "gdrive",    "path": "project-backups", "success": true },
-          { "remote": "s3-backup", "path": "backups/projects", "success": true }
-        ]
-      },
-      "history": [
-        {
-          "timestamp": "2026-05-21T13:00:00Z",
-          "archive_name": "projects-backup-2026-05-21_13-00-00.tar.gz",
-          "size_bytes": 2200000000,
-          "file_count": 12100,
-          "retention_bucket": "daily"
-        },
-        {
-          "timestamp": "2026-05-15T13:00:00Z",
-          "archive_name": "projects-backup-2026-05-15_13-00-00.tar.gz",
-          "size_bytes": 2050000000,
-          "file_count": 11800,
-          "retention_bucket": "weekly"
-        }
-      ]
-    },
-    "research": {
-      "path": "~/research",
-      "last_backup": {
-        "timestamp": "2026-05-22T13:02:10Z",
-        "archive_name": "research-backup-2026-05-22_13-02-10.tar.gz",
-        "size_bytes": 890000000,
-        "file_count": 4210,
-        "uploads": [
-          { "remote": "gdrive", "path": "research-backups", "success": true }
-        ]
-      },
-      "history": []
-    }
-  }
-}
-```
-
-Fields:
-- `schema_version` — for future migration
-- `updated_at` — ISO 8601 UTC timestamp of last state write
-- `jobs` — keyed by job `name`
-- `last_backup` — used for growth detection on the next run
-- `history` — ordered list used for retention policy decisions
-- `retention_bucket` — `daily`, `weekly`, `monthly`, or `yearly`
-- `uploads` — per-destination upload results for the run
-
----
-
-# Growth Detection
-
-The system should compare backup size against previous successful backup.
-
-Example configurable threshold:
-
-```yaml
-max_growth_ratio: 1.5
-```
-
-Meaning:
-- if backup size exceeds 150% of previous size
-- warning should trigger
-
-Growth is tracked per job independently.
-
----
-
-# Notifications
-
-Notifications should ONLY appear for suspicious situations.
-
-Normal successful backups should remain silent.
-
----
-
-# Notification Backend
-
-Use:
-
-```bash
-terminal-notifier
-```
-
-Example:
-
-```bash
-terminal-notifier \
-  -title "Backup Warning" \
-  -message "Backup size increased by 2.3x"
-```
-
----
-
-# Warning Conditions
-
-Examples:
-- excessive size growth
-- upload failure
-- archive creation failure
-- suspiciously large files
-- unexpectedly large included file count
-
-All thresholds must be configurable.
-
----
-
-# Logging
-
-## Log Structure
-
-```text
-logs/
-├── latest.log
-└── history/
-    ├── 2026-05-22.log
-    ├── 2026-05-23.log
-```
-
----
-
-# Log Rotation
-
-Retention should be configurable.
-
-Example:
-
-```yaml
-log_retention_days: 90
-```
-
----
-
-# Retention Policy
-
-Retention should support:
-- daily
-- weekly
-- monthly
-- yearly
-
-Example:
-
-```yaml
-retention:
-  daily: 7
-  weekly: 8
-  monthly: 12
-  yearly: 5
-```
-
----
-
-# Retention Semantics
-
-Keep:
-- last 7 daily backups
-- last 8 weekly backups
-- last 12 monthly backups
-- last 5 yearly backups
-
-Older backups should be automatically removed from all destinations.
-
-Retention is applied per job independently.
-
----
-
-# Restore Philosophy
-
-Restore must remain extremely simple.
-
-Preferred restore flow:
-
-```bash
-tar -xzf backup.tar.gz
-```
-
-No proprietary formats.
-
-No opaque repositories.
-
----
-
-# Configuration File
+Each job defines what to back up and where.
 
 ```yaml
 jobs:
   - name: projects
     source: ~/projects
-    destinations:
-      - remote: gdrive
-        path: project-backups
+    repository: rclone:gdrive:restic-backups
 
   - name: research
     source: ~/research
-    destinations:
-      - remote: gdrive
-        path: research-backups
-      - remote: s3-backup
-        path: backups/research
+    repository: rclone:s3-backup:restic-research
+```
 
-  - name: notes
-    source: ~/notes
-    destinations:
-      - remote: dropbox
-        path: /Backups/notes
+Each job maps to exactly one restic repository. Multiple destinations means
+multiple jobs pointing to different repositories. All repositories must be
+initialized before the first run (`restic -r <repo> init`).
+
+---
+
+# Exclude Patterns
+
+## Global Exclude File
+
+A single `excludes.txt` file applies to all jobs. Format follows restic's
+exclude file syntax (similar to shell glob, one pattern per line, `#` for
+comments).
+
+Example `excludes.txt`:
+
+```
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Node
+node_modules/
+
+# ML artifacts
+wandb/
+checkpoints/
+*.ckpt
+*.pt
+*.safetensors
+
+# macOS
+.DS_Store
+
+# Editors
+.idea/
+.vscode/
+```
+
+The exclude file path is configurable in `config.yaml`.
+
+## Per-Directory Opt-Out
+
+Per-directory ignore files are not supported. Instead, drop a `.nobackup`
+file in any directory to exclude it entirely.
+
+The orchestrator always passes `--exclude-if-present .nobackup` to every
+restic invocation.
+
+---
+
+# Dry Run Mode
+
+```bash
+python backup.py dry-run
+python backup.py dry-run --job projects
+```
+
+The dry-run is implemented by the orchestrator itself using `pathspec` to
+apply the exclude patterns. It does NOT invoke restic and does NOT require a
+repository to exist. This makes it usable before the first backup — the
+primary use case is curating the exclude file for a new project or language.
+
+Output: sorted list of included files, sorted list of excluded files,
+statistics, largest included files, largest excluded files.
+
+---
+
+# Dry Run Output
+
+```text
+Job: projects  (~/projects)
+
+--- Included Files (12,433) ---
+projects/repo1/main.py
+projects/repo1/train.py
+...
+
+--- Excluded Files (88,192) ---
+projects/repo1/.venv/bin/python    [rule: .venv/]
+projects/repo1/__pycache__/x.pyc   [rule: __pycache__/]
+...
+
+--- Statistics ---
+Included:   12,433 files    2.1 GB
+Excluded:   88,192 files   48.0 GB
+
+--- Largest Included Files ---
+512 MB  projects/data/sample.parquet
+220 MB  projects/model-small.pt
+
+--- Largest Excluded Files ---
+42 GB   projects/checkpoints/full.ckpt
+12 GB   projects/.venv/libtorch.so
+```
+
+Excluded lines include the matching rule to make it easy to audit.
+
+---
+
+# Guardrails
+
+Guardrails are safety checks that run around each backup. They do not block
+the backup — they emit warnings and send notifications.
+
+## Pre-Backup Guardrails
+
+Run before the backup starts, using a filesystem scan (no repo needed).
+
+**Large file check:** warn if any included file exceeds `max_file_size_mb`.
+
+```yaml
+guardrails:
+  max_file_size_mb: 100
+```
+
+## Post-Backup Guardrails
+
+Run after the backup completes, using `restic stats` and `restic ls --json`
+on the new and previous snapshots.
+
+**Size growth ratio:** warn if the new snapshot is significantly larger than
+the previous one.
+
+```yaml
+guardrails:
+  max_growth_ratio: 1.5    # warn if >150% of previous snapshot size
+```
+
+**File count growth ratio:** warn if the number of backed-up files jumps
+unexpectedly.
+
+```yaml
+guardrails:
+  max_file_count_growth_ratio: 2.0
+```
+
+**New file extensions:** warn if the new snapshot contains file extensions
+not present in the previous snapshot. This catches accidental inclusion of
+new binary or artifact types.
+
+```yaml
+guardrails:
+  warn_on_new_extensions: true
+```
+
+Example warning:
+```
+WARNING: new file extensions in snapshot abc123:
+  .so   (14 files, 380 MB)
+  .bin  (3 files, 12 MB)
+```
+
+## Post-Factum Cleanup
+
+If a guardrail fires after a real backup and you want to remove the offending
+files from all existing snapshots:
+
+```bash
+# Rewrite all snapshots excluding a pattern, remove originals immediately
+restic -r <repo> rewrite --exclude "*.so" --forget
+restic -r <repo> prune
+```
+
+`restic rewrite` creates new snapshots without the matched files. `--forget`
+removes the originals in the same step. `prune` frees the storage.
+
+---
+
+# Notifications
+
+Notifications only fire on warnings or failures. Silent on success.
+
+Backend: `terminal-notifier` (macOS).
+
+```bash
+terminal-notifier -title "Backup Warning" -message "..."
+```
+
+Conditions that trigger a notification:
+- any guardrail threshold exceeded
+- backup failure
+- repository unreachable
+
+---
+
+# Logging
+
+Each run writes a timestamped log to `logs/history/`. The `logs/latest.log`
+symlink always points to the most recent run.
+
+```text
+logs/
+├── latest.log  →  history/2026-05-22_13-00-00.log
+└── history/
+    ├── 2026-05-22_13-00-00.log
+    └── 2026-05-23_13-00-00.log
+```
+
+Log retention is configurable:
+
+```yaml
+logs:
+  retention_days: 90
+```
+
+Logs older than `retention_days` are deleted on each run.
+
+---
+
+# Retention Policy
+
+Delegated entirely to restic. After each successful backup:
+
+```bash
+restic forget \
+  --keep-daily 7 \
+  --keep-weekly 8 \
+  --keep-monthly 12 \
+  --keep-yearly 5 \
+  --prune
+```
+
+Configurable in `config.yaml`:
+
+```yaml
+retention:
+  daily: 7
+  weekly: 8
+  monthly: 12
+  yearly: 5
+```
+
+---
+
+# Restore
+
+Delegated to restic. No custom restore logic needed.
+
+```bash
+# Restore latest snapshot to a directory
+restic -r <repo> restore latest --target ~/restored
+
+# Restore a single file (path is relative to backup root)
+restic -r <repo> restore latest \
+  --include /projects/repo/important.py \
+  --target /tmp/restore
+
+# Browse snapshots
+restic -r <repo> snapshots
+restic -r <repo> ls latest
+```
+
+---
+
+# Configuration File
+
+Full example `config/config.yaml`:
+
+```yaml
+jobs:
+  - name: projects
+    source: ~/projects
+    repository: rclone:gdrive:restic-backups
+
+  - name: research
+    source: ~/research
+    repository: rclone:s3-backup:restic-research
+
+exclude_file: excludes.txt
 
 schedule:
   min_backup_interval_hours: 20
 
-max_growth_ratio: 1.5
+guardrails:
+  max_growth_ratio: 1.5
+  max_file_size_mb: 100
+  max_file_count_growth_ratio: 2.0
+  warn_on_new_extensions: true
 
 notification:
   enabled: true
-  notify_on_growth_warning: true
-  notify_on_failure: true
 
 retention:
   daily: 7
   weekly: 8
   monthly: 12
   yearly: 5
-
-reports:
-  show_largest_files: 20
 
 logs:
   retention_days: 90
@@ -723,115 +446,92 @@ logs:
 
 # Scheduling
 
-## macOS Recommended Option
+## Strategy for Irregular Laptop Use
 
-Use:
+A fixed daily trigger (e.g. 13:00 via `StartCalendarInterval`) silently skips
+runs when the laptop is closed or unused. For irregular usage the correct
+approach is a frequent trigger combined with a recency check in the script.
 
-```text
-launchd
+**Pattern:**
+```
+launchd fires every hour (StartInterval: 3600)
+  → script queries last restic snapshot time
+  → if age < min_backup_interval_hours: exit silently
+  → if age ≥ min_backup_interval_hours: run backup
 ```
 
-instead of cron.
+**Recommended interval:** `min_backup_interval_hours: 20`
 
-Reasons:
-- native macOS scheduler
-- reliable
-- survives sleep better
-- integrated with system
+This is effectively once per day, but not tied to a fixed time. On any day
+the laptop is open for at least one hour, a backup will eventually happen.
+Days where the machine is closed all day are simply missed — acceptable for a
+source code backup that complements git.
 
----
+**Why not more often?** For source code that is also pushed to git, once per
+day is the right cadence. More frequent backups add repository churn and cloud
+storage costs without meaningful safety improvement.
 
-## Handling Irregular Laptop Usage
+## Scheduling Management
 
-A fixed daily schedule (e.g. 13:00 via `StartCalendarInterval`) has a silent
-failure mode: if the laptop is closed or unused at that time, launchd skips the
-run entirely and does not backfill it when the machine wakes.
-
-**Solution: frequent trigger + recency check in the script.**
-
-Configure launchd with `StartInterval` (fires every N seconds after last run,
-even after sleep) rather than `StartCalendarInterval`. The script itself decides
-whether enough time has passed since the last backup.
-
-```
-launchd fires every hour
-  → script checks: time since last backup < min_backup_interval_hours?
-      yes → exit silently (nothing to do)
-      no  → run backup
+```bash
+python backup.py schedule install    # write and load launchd agent
+python backup.py schedule uninstall  # unload and delete plist
+python backup.py schedule status     # show agent state and last run time
 ```
 
-The last backup timestamp is read directly from the backup tool — no separate
-state tracking required.
+The generated plist uses `StartInterval: 3600`. The recency check uses
+`restic snapshots --latest 1 --json` to read the last snapshot timestamp.
 
-This guarantees that on any day the laptop is open for at least one hour, a
-backup will eventually run. Missed days are caught automatically the next time
-the machine is active.
-
----
-
-## Suggested Schedule
-
-Configure launchd `StartInterval` to fire every **60 minutes**.
-
-Set `min_backup_interval_hours` in config to your desired backup frequency
-(default: 20 hours — effectively once per day, but not tied to a fixed time).
-
-```yaml
-schedule:
-  min_backup_interval_hours: 20
+macOS only. The plist is written to:
 ```
-
-This tolerates:
-- laptop closed during the day
-- irregular usage patterns
-- days where the machine is only open briefly
+~/Library/LaunchAgents/com.user.workspace-backup.plist
+```
 
 ---
 
 # Security Considerations
 
-## rclone Credentials
+The orchestrator does not manage credentials.
 
-The system does not manage cloud credentials.
-
-All authentication is handled by rclone.
-
-The backup system only calls rclone with pre-configured remote names.
-
-Credentials and tokens are managed entirely outside this system.
+- restic repository passwords: set via `RESTIC_PASSWORD` env var or
+  `RESTIC_PASSWORD_FILE` pointing to a file outside the repo
+- rclone remotes: configured and authenticated separately via `rclone config`
+- The orchestrator only reads `RESTIC_PASSWORD` (or its file) and passes
+  repository URLs to restic
 
 ---
 
 # Dependencies
 
-## Python Dependencies
+## Python
 
-```text
-pathspec
-PyYAML
+```
+pathspec    exclude pattern matching for dry-run
+PyYAML      config parsing
 ```
 
 Optional:
-
-```text
-rich
-humanize
+```
+rich        prettier terminal output
+humanize    human-readable sizes
 ```
 
----
+## External
 
-# External Dependencies
+```
+restic              backup engine
+terminal-notifier   macOS notifications
+```
 
-```text
+rclone is required only if using cloud backends (Google Drive, S3, etc.):
+```
 rclone
-terminal-notifier
 ```
 
-Installed via:
-
+Install:
 ```bash
-brew install rclone
-brew install terminal-notifier
+brew install restic terminal-notifier
+brew install rclone   # if using cloud backends
 ```
 
 ---
@@ -839,17 +539,11 @@ brew install terminal-notifier
 # Non-Goals
 
 This project is NOT intended to:
+- implement its own backup storage or archive format
+- manage restic repository initialization or passwords
+- configure rclone remotes
 - replace enterprise backup systems
-- support block-level deduplication
-- provide encrypted snapshot repositories
-- support multi-user backup orchestration
-- become a generic cloud sync platform
-- manage rclone remote configuration
-
-The focus is:
-- source code
-- ML projects
-- research workflows
-- transparent archives
-- inspectable filtering
-- lightweight operation
+- support block-level deduplication (restic handles this)
+- support multi-user orchestration
+- run on non-macOS systems (scheduling layer is macOS-specific; core backup
+  logic is portable)
