@@ -132,21 +132,38 @@ Responsible for:
 
 The Python layer should treat rclone as a transport backend.
 
+All cloud remotes must already be configured in rclone before use.
+
+The system does not manage rclone authentication.
+
 ---
 
-### 3. Google Drive
+### 3. Cloud Destinations
 
-Primary backup destination.
+The system supports any rclone-compatible backend:
+- Google Drive
+- S3
+- Backblaze B2
+- Dropbox
+- SFTP servers
+- any other rclone remote
 
-Configured via rclone remote.
-
-Example remote name:
+A destination is a pair:
 
 ```text
-gdrive
+(rclone_remote_name, remote_path)
 ```
 
-The remote name must be configurable.
+Example:
+
+```text
+remote: gdrive
+path:   project-backups
+```
+
+Multiple destinations may be specified globally and per source.
+
+All remotes must exist in rclone configuration before the backup runs.
 
 ---
 
@@ -162,6 +179,7 @@ project-backup/
 ├── config/
 │   ├── config.yaml
 │   └── global.backupignore
+├── state.json          ← local state cache (see Backup State section)
 ├── logs/
 │   ├── latest.log
 │   └── history/
@@ -170,17 +188,27 @@ project-backup/
 
 ---
 
-# Source Directory
+# Source Directories
 
-Example:
+The system supports one or more source directories.
+
+Each source directory:
+- is backed up as a separate archive
+- may specify its own set of cloud destinations
+- uses the source `name` field in archive filenames
+- inherits global destinations if no per-source destinations are set
+
+Example sources:
 
 ```text
 ~/projects
+~/research
+~/notes
 ```
 
-The source directory must be configurable.
+All source directories must be explicitly listed in configuration.
 
-The backup should recursively process the entire tree.
+The backup recursively processes the entire tree of each source directory.
 
 ---
 
@@ -387,14 +415,20 @@ No permanent staging directory should exist.
 
 # Archive Naming
 
+Archives are named using the source `name` field and the backup timestamp.
+
 Example:
 
 ```text
 projects-backup-2026-05-22_18-30-00.tar.gz
+research-backup-2026-05-22_18-30-00.tar.gz
 ```
 
-Where projects is the name of the source dir
-specified in config.
+Pattern:
+
+```text
+{source_name}-backup-{YYYY}-{MM}-{DD}_{HH}-{MM}-{SS}.tar.gz
+```
 
 ---
 
@@ -402,28 +436,107 @@ specified in config.
 
 Use rclone.
 
+Each archive is uploaded to all configured destinations for its source.
+
 Example:
 
 ```bash
-rclone copy archive.tar.gz gdrive:project-backups
+rclone copy projects-backup-2026-05-22_18-30-00.tar.gz gdrive:project-backups
+rclone copy projects-backup-2026-05-22_18-30-00.tar.gz s3-backup:backups/projects
 ```
 
 ---
 
-# Backup Metadata
+# Backup State
 
-The system should maintain metadata locally.
+## Decision: Store State on Remote, Cache Locally
 
-Example:
+The state file tracks what archives exist on each remote, historical sizes, and
+retention bookkeeping. Storing it only locally creates a serious gap: if the
+machine is lost or rebuilt, the state is gone — but the archives on the remotes
+are not. The next run has no knowledge of existing backups and cannot apply
+retention policy or detect growth anomalies.
 
-```text
-state.json
+Because the state describes what is *on the remote*, it belongs *on the remote*.
+
+**Design:**
+
+- After each successful backup, upload a small `state.json` sidecar to every
+  destination path where archives were written.
+- Also maintain a local cache (`state.json` in the project config directory) to
+  avoid a network round-trip on every run.
+- On startup: if local cache is absent or stale, download `state.json` from the
+  primary destination to restore it.
+- The remote copy is authoritative. The local copy is a performance cache.
+
+This adds negligible overhead (state files are a few KB) and makes the system
+resilient to machine loss.
+
+---
+
+## State File Format
+
+Example `state.json`:
+
+```json
+{
+  "schema_version": 1,
+  "updated_at": "2026-05-22T13:00:05Z",
+  "sources": {
+    "projects": {
+      "path": "~/projects",
+      "last_backup": {
+        "timestamp": "2026-05-22T13:00:00Z",
+        "archive_name": "projects-backup-2026-05-22_13-00-00.tar.gz",
+        "size_bytes": 2254857830,
+        "file_count": 12433,
+        "uploads": [
+          { "remote": "gdrive",    "path": "project-backups", "success": true },
+          { "remote": "s3-backup", "path": "backups/projects", "success": true }
+        ]
+      },
+      "history": [
+        {
+          "timestamp": "2026-05-21T13:00:00Z",
+          "archive_name": "projects-backup-2026-05-21_13-00-00.tar.gz",
+          "size_bytes": 2200000000,
+          "file_count": 12100,
+          "retention_bucket": "daily"
+        },
+        {
+          "timestamp": "2026-05-15T13:00:00Z",
+          "archive_name": "projects-backup-2026-05-15_13-00-00.tar.gz",
+          "size_bytes": 2050000000,
+          "file_count": 11800,
+          "retention_bucket": "weekly"
+        }
+      ]
+    },
+    "research": {
+      "path": "~/research",
+      "last_backup": {
+        "timestamp": "2026-05-22T13:02:10Z",
+        "archive_name": "research-backup-2026-05-22_13-02-10.tar.gz",
+        "size_bytes": 890000000,
+        "file_count": 4210,
+        "uploads": [
+          { "remote": "gdrive", "path": "research-backups", "success": true }
+        ]
+      },
+      "history": []
+    }
+  }
+}
 ```
 
-Used for:
-- previous backup size
-- historical statistics
-- retention tracking
+Fields:
+- `schema_version` — for future migration
+- `updated_at` — ISO 8601 UTC timestamp of last state write
+- `sources` — keyed by source `name`
+- `last_backup` — used for growth detection on the next run
+- `history` — ordered list used for retention policy decisions
+- `retention_bucket` — `daily`, `weekly`, `monthly`, or `yearly`
+- `uploads` — per-destination upload results for the run
 
 ---
 
@@ -440,6 +553,8 @@ max_growth_ratio: 1.5
 Meaning:
 - if backup size exceeds 150% of previous size
 - warning should trigger
+
+Growth is tracked per source independently.
 
 ---
 
@@ -536,7 +651,9 @@ Keep:
 - last 12 monthly backups
 - last 5 yearly backups
 
-Older backups should be automatically removed.
+Older backups should be automatically removed from all destinations.
+
+Retention is applied per source independently.
 
 ---
 
@@ -558,13 +675,36 @@ No opaque repositories.
 
 # Configuration File
 
-Example:
+## Multi-Source, Multi-Destination Example
 
 ```yaml
-source_directory: ~/projects
+# Global default destinations — used by any source that does not
+# specify its own destinations list.
+destinations:
+  - remote: gdrive
+    path: workspace-backups
 
-rclone_remote: gdrive
-rclone_destination: project-backups
+# Source directories to back up.
+sources:
+  - name: projects
+    path: ~/projects
+    # Inherits global destinations.
+
+  - name: research
+    path: ~/research
+    # Overrides global destinations for this source only.
+    destinations:
+      - remote: gdrive
+        path: research-backups
+      - remote: s3-backup
+        path: backups/research
+
+  - name: notes
+    path: ~/notes
+    # Destinations can point to a completely different remote.
+    destinations:
+      - remote: dropbox
+        path: /Backups/notes
 
 max_growth_ratio: 1.5
 
@@ -585,6 +725,14 @@ reports:
 logs:
   retention_days: 90
 ```
+
+## Notes on Destination Resolution
+
+- If a source has no `destinations` key, global `destinations` are used.
+- If a source has an explicit `destinations` list, it completely replaces the
+  global list for that source (no merging).
+- At least one destination must resolve for each source, or the run aborts.
+- All referenced remotes must exist in rclone configuration.
 
 ---
 
@@ -621,16 +769,15 @@ Example:
 
 # Security Considerations
 
-## Google Drive Scope
+## rclone Credentials
 
-Use:
-- Google Drive API only
+The system does not manage cloud credentials.
 
-Do NOT enable:
-- Gmail API
-- Photos API
+All authentication is handled by rclone.
 
-The backup system should not gain access to email.
+The backup system only calls rclone with pre-configured remote names.
+
+Credentials and tokens are managed entirely outside this system.
 
 ---
 
@@ -676,6 +823,7 @@ This project is NOT intended to:
 - provide encrypted snapshot repositories
 - support multi-user backup orchestration
 - become a generic cloud sync platform
+- manage rclone remote configuration
 
 The focus is:
 - source code
