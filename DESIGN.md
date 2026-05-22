@@ -696,6 +696,9 @@ jobs:
       - remote: dropbox
         path: /Backups/notes
 
+schedule:
+  min_backup_interval_hours: 20
+
 max_growth_ratio: 1.5
 
 notification:
@@ -738,14 +741,50 @@ Reasons:
 
 ---
 
-# Suggested Schedule
+## Handling Irregular Laptop Usage
 
-Example:
-- once per day
-- daytime execution
+A fixed daily schedule (e.g. 13:00 via `StartCalendarInterval`) has a silent
+failure mode: if the laptop is closed or unused at that time, launchd skips the
+run entirely and does not backfill it when the machine wakes.
 
-Example:
-- 13:00 local time
+**Solution: frequent trigger + recency check in the script.**
+
+Configure launchd with `StartInterval` (fires every N seconds after last run,
+even after sleep) rather than `StartCalendarInterval`. The script itself decides
+whether enough time has passed since the last backup.
+
+```
+launchd fires every hour
+  → script checks: time since last backup < min_backup_interval_hours?
+      yes → exit silently (nothing to do)
+      no  → run backup
+```
+
+The last backup timestamp is read directly from the backup tool — no separate
+state tracking required.
+
+This guarantees that on any day the laptop is open for at least one hour, a
+backup will eventually run. Missed days are caught automatically the next time
+the machine is active.
+
+---
+
+## Suggested Schedule
+
+Configure launchd `StartInterval` to fire every **60 minutes**.
+
+Set `min_backup_interval_hours` in config to your desired backup frequency
+(default: 20 hours — effectively once per day, but not tied to a fixed time).
+
+```yaml
+schedule:
+  min_backup_interval_hours: 20
+```
+
+This tolerates:
+- laptop closed during the day
+- irregular usage patterns
+- days where the machine is only open briefly
 
 ---
 
