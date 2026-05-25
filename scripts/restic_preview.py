@@ -167,11 +167,16 @@ def _load_exclude(path: Path):
     """
     if not path.exists():
         print(f"warning: exclude file not found: {path}", file=sys.stderr)
-        return pathspec.PathSpec.from_lines("gitwildmatch", []), []
+        return pathspec.PathSpec.from_lines("gitignore", []), []
     raw = [l for l in path.read_text().splitlines()
            if l.strip() and not l.startswith("#")]
-    spec = pathspec.PathSpec.from_lines("gitwildmatch", raw)
-    pat_specs = [(p, pathspec.PathSpec.from_lines("gitwildmatch", [p])) for p in raw]
+    # Restic ignores trailing / in patterns (a trailing / is simply stripped).
+    # pathspec/gitignore treats trailing / as "match directories only", which
+    # would cause .env/ to miss a file named .env. Strip here to match restic.
+    # See: https://restic.readthedocs.io/en/latest/040_backup.html#excluding-files
+    raw = [l.rstrip("/") or l for l in raw]
+    spec = pathspec.PathSpec.from_lines("gitignore", raw)
+    pat_specs = [(p, pathspec.PathSpec.from_lines("gitignore", [p])) for p in raw]
     return spec, pat_specs
 
 

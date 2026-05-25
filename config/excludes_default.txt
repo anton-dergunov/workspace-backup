@@ -1,0 +1,75 @@
+# restic exclude-file — default patterns for source code / ML workspaces
+#
+# Docs: https://restic.readthedocs.io/en/latest/040_backup.html#excluding-files
+#
+# Pattern syntax summary:
+#   *          matches any sequence of non-separator characters (won't cross /)
+#   **         matches across directory separators (e.g. **/*.pyc)
+#   /pattern   WARNING: restic tests patterns against absolute filesystem paths,
+#              so /build only matches a /build at the filesystem root — it will
+#              NEVER match <source>/build in a normal backup. Avoid leading /.
+#              (restic_preview.py uses gitignore semantics where / anchors to the
+#              source root, so the two tools disagree on this — another reason
+#              to avoid leading / entirely)
+#   pattern/   trailing / is IGNORED by restic (kept here for readability only);
+#              .venv/ and .venv are identical to restic
+#   !pattern   negates a previous match, but cannot re-include files inside an
+#              already-excluded directory
+
+# === Python ===
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+*.egg/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# === Node / JS ===
+node_modules/
+.next/
+.nuxt/
+dist/
+out/
+
+# === ML / Research ===
+wandb/
+mlruns/
+checkpoints/
+*.ckpt
+*.pt
+*.pth
+*.safetensors
+*.gguf
+.cache/
+
+# === Large data (uncomment if you want to exclude) ===
+# data/
+# datasets/
+# *.parquet
+# *.csv
+# *.hdf5
+# *.h5
+
+# === macOS ===
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# === Editors ===
+.idea/
+*.iml
+.vscode/
+
+# === Misc ===
+*.log
+*.tmp
+.Trash/
