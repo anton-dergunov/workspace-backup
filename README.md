@@ -1,5 +1,7 @@
 # workspace-backup
 
+[![Tests](https://github.com/anton-dergunov/workspace-backup/actions/workflows/test.yml/badge.svg)](https://github.com/anton-dergunov/workspace-backup/actions/workflows/test.yml)
+
 Lightweight Python orchestrator on top of [restic](https://restic.net) for
 backing up source code, ML projects, and research workspaces.
 
