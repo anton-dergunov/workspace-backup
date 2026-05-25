@@ -1,0 +1,58 @@
+# === Python ===
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+*.egg/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# === Node / JS ===
+node_modules/
+.next/
+.nuxt/
+dist/
+out/
+
+# === ML / Research ===
+wandb/
+mlruns/
+checkpoints/
+*.ckpt
+*.pt
+*.pth
+*.safetensors
+*.gguf
+.cache/
+
+# === Large data (uncomment if you want to exclude) ===
+# data/
+# datasets/
+# *.parquet
+# *.csv
+# *.hdf5
+# *.h5
+
+# === macOS ===
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# === Editors ===
+.idea/
+*.iml
+.vscode/
+
+# === Misc ===
+*.log
+*.tmp
+.Trash/
+
