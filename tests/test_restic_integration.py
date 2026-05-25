@@ -6,7 +6,6 @@ restic repository in pytest's tmp_path.
 Requires restic installed (brew install restic). Tests are skipped otherwise.
 """
 
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -14,8 +13,7 @@ from typing import Optional
 import pathspec
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
-from restic_preview import collect, _load_exclude
+from workspace_backup.preview import collect, _load_exclude
 
 from conftest import (
     assert_no_discrepancies,

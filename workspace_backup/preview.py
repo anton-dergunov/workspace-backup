@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Preview which files restic would include or exclude from a backup.
 
@@ -6,7 +5,7 @@ Applies gitignore-style patterns from an exclude file (same semantics as
 restic's --exclude-file). Does NOT need a configured restic repository.
 
 Usage:
-    restic_preview.py <source> [options]
+    restic-preview <source> [options]
 
 Options:
     --exclude-file FILE      Exclude file (default: ~/.config/restic/excludes)

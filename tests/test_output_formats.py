@@ -16,8 +16,6 @@ import pytest
 
 from conftest import build_tree, make_exclude_file
 
-PREVIEW_SCRIPT = Path(__file__).parent.parent / "scripts" / "restic_preview.py"
-
 # Fixed tree used by all format tests
 _TREE = {
     "main.py":       "print('hello')",
@@ -38,7 +36,7 @@ def output_env(tmp_path):
 
 def _run(args: list, **kwargs) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [sys.executable, str(PREVIEW_SCRIPT), *args],
+        [sys.executable, "-m", "workspace_backup.preview", *args],
         capture_output=True, text=True, timeout=30, **kwargs,
     )
 

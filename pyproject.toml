@@ -9,7 +9,7 @@ description = "Lightweight Python orchestrator for restic-based backups of sourc
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [
-    {name = "Anton Dergunov", email = ""},
+    {name = "Anton Dergunov"},
 ]
 license = {text = "MIT"}
 keywords = ["backup", "restic", "automation"]
@@ -28,6 +28,10 @@ dependencies = [
     "PyYAML>=6.0",
 ]
 
+[project.scripts]
+restic-preview = "workspace_backup.preview:main"
+restic-backup = "workspace_backup.backup:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0",
@@ -38,4 +42,4 @@ testpaths = ["tests"]
 markers = ["slow: calls real restic binary"]
 
 [tool.setuptools]
-packages = ["scripts"]
+packages = ["workspace_backup"]
