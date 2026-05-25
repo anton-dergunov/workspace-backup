@@ -9,15 +9,12 @@ import bisect
 import os
 import shutil
 import subprocess
-import sys
 from collections import defaultdict
 from pathlib import Path
 
 import pytest
 
-# Make scripts/ importable
-sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
-from restic_preview import collect, _load_exclude, fmt_size  # noqa: E402
+from workspace_backup.preview import collect, _load_exclude, fmt_size
 
 # ── Skip marker ───────────────────────────────────────────────────────────────
 
