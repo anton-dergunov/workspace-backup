@@ -151,13 +151,10 @@ default:
 
     exclude-file:
       - "/path/to/repo/config/excludes.txt"
-
     exclude-if-present: ".nobackup"
-
     skip-if-unchanged: true
 
     schedule: hourly
-
     schedule-log: "/Users/YOUR_USERNAME/resticprofile-backup.log"
 ```
 

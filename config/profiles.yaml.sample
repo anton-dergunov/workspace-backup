@@ -73,19 +73,19 @@ default:
 
   backup:
     source:
-      - "~/projects"
-      - "~/Dropbox"
+      - "~/my_dir1"
+      - "~/my_dir2"
 
     tags:
       - workstation
 
     exclude-file:
-      - "/Users/anton/projects/tools/workspace-backup/config/excludes.txt"
+      - "/path/to/repo/config/excludes.txt"
     exclude-if-present: ".nobackup"
     skip-if-unchanged: true
 
     schedule: hourly
-    schedule-log: "/Users/anton/resticprofile-projects.log"
+    schedule-log: "/Users/YOUR_USERNAME/resticprofile-backup.log"
 
     # run-after:
     #   - "python3 /Users/anton/projects/tools/workspace-backup/scripts/guardrails.py"
