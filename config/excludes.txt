@@ -73,3 +73,5 @@ checkpoints/
 *.log
 *.tmp
 .Trash/
+.dropbox.cache/
+.dropbox

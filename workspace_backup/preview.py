@@ -642,7 +642,7 @@ def main():
     ap.add_argument(
         "--summarize",
         action="append",
-        default=[],
+        default=[".git"],
         metavar="NAME",
         help="Directory name to collapse to a total (repeatable, e.g. --summarize .git)",
     )

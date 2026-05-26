@@ -1,0 +1,99 @@
+# resticprofile configuration for workspace backup
+#
+# ──────────────────────────────────────────────────────────────────────────────
+# CONFIGURATION NOTES
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# TODO Move all of these notes closer to where they are used
+# HOSTNAME TEMPLATES:
+#   Use {{ .Hostname }} to embed the machine hostname in repository paths.
+#   This allows the same config to be used across multiple machines with
+#   separate backups per machine:
+#     rclone:gdrive:restic-projects-{{ .Hostname }}
+#
+# EXCLUDE FILES:
+#   Specifies files to exclude. See config/excludes.txt for an example
+#   Reference: https://restic.readthedocs.io/en/latest/040_backup.html
+#
+# EXCLUDE-IF-PRESENT:
+#   Restic's --exclude-if-present flag. Drop a .nobackup marker file in any
+#   directory to exclude that entire directory from backups.
+#
+# SCHEDULING:
+# TODO Just provide a link to resticprofile doc
+#   For irregular laptop usage, use min-interval to implement smart skipping:
+#   - Schedule fires frequently (e.g. hourly)
+#   - Resticprofile checks last snapshot time
+#   - If it's too recent, job is skipped
+#   - This ensures daily backups without strict scheduling
+#
+# GUARDRAILS (post-backup hook):
+#   The guardrails.py script runs after each successful backup.
+#   It checks:
+#   - Size growth ratio: warns if snapshot > 150% of previous
+#   - File count growth: warns if file count > 200% of previous
+#   - New extensions: warns if new file types appear
+#
+#   It queries restic directly to get snapshot metrics:
+#     restic snapshots --latest 2 --json
+#     restic stats <snapshot>
+#     restic ls --json <snapshot>
+#
+#   If guardrails violated, it:
+#   - Sends notification via terminal-notifier
+#   - Exits with non-zero to mark job as failed
+#   - (This fails the backup in resticprofile's job tracking)
+#
+# RETENTION:
+#   The retention section runs the restic forget + prune workflow
+#   after each backup completes (if after-backup: true).
+#
+#   Example policy keeps:
+#   - 7 daily snapshots
+#   - 8 weekly snapshots
+#   - 12 monthly snapshots
+#   - 5 yearly snapshots
+#
+# RESTICPROFILE SETUP:
+#   1. Install resticprofile: brew install resticprofile
+#   2. Place this file at: ~/.config/resticprofile/profiles.yaml
+#      (or use --config flag to point to this directory)
+#   3. Configure rclone remotes: rclone config
+#   4. Initialize repositories:
+#      restic -r rclone:gdrive:restic-projects-$(hostname) init
+#   5. Test dry-run: resticprofile -n backup projects
+#   6. Install scheduling: resticprofile schedule
+
+
+version: "1"
+
+default:
+  repository: "rclone:gdrive:restic-backup-{{ .Hostname }}"
+  password-file: "~/.config/restic/password"
+
+  backup:
+    source:
+      - "~/projects"
+      - "~/Dropbox"
+
+    tags:
+      - workstation
+
+    exclude-file:
+      - "/Users/anton/projects/tools/workspace-backup/config/excludes.txt"
+    exclude-if-present: ".nobackup"
+    skip-if-unchanged: true
+
+    schedule: hourly
+    schedule-log: "/Users/anton/resticprofile-projects.log"
+
+    # run-after:
+    #   - "python3 /Users/anton/projects/tools/workspace-backup/workspace_backup/guardrails.py"
+
+  # retention:
+  #   after-backup: true
+  #   keep-daily: 7
+  #   keep-weekly: 8
+  #   keep-monthly: 12
+  #   keep-yearly: 5
+  #   prune: true

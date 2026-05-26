@@ -10,6 +10,11 @@ This tool handles everything around it: job configuration, a developer-friendly
 dry-run for curating exclude patterns, safety guardrails, structured logging,
 and macOS scheduling.
 
+TBD
+
+Install resticprofile: brew install resticprofile
+Docs: https://creativeprojects.github.io/resticprofile/
+
 ---
 
 ## What it does
