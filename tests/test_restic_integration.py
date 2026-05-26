@@ -9,11 +9,13 @@ Requires restic installed (brew install restic). Tests are skipped otherwise.
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+import sys
 
 import pathspec
 import pytest
 
-from workspace_backup.preview import collect, _load_exclude
+sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
+from preview import collect, _load_exclude
 
 from conftest import (
     assert_no_discrepancies,
@@ -23,7 +25,7 @@ from conftest import (
     skip_no_restic,
 )
 
-REAL_EXCLUDES = Path(__file__).parent.parent / "config" / "excludes_default.txt"
+REAL_EXCLUDES = Path(__file__).parent.parent / "config" / "excludes.txt"
 
 
 # ── Parametrized basic scenarios (tests 1–4) ──────────────────────────────────
@@ -197,7 +199,7 @@ def test_nobackup_marker(tmp_path, tmp_restic_repo):
     assert source / "sensitive" in report["nobackup_dir_list"]
 
 
-# ── Test 7: real excludes_default.txt ─────────────────────────────────────────
+# ── Test 7: real excludes.txt ─────────────────────────────────────────────────
 
 @skip_no_restic
 def test_real_excludes_file(tmp_path, tmp_restic_repo):

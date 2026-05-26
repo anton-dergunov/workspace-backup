@@ -2,189 +2,94 @@
 
 [![Tests](https://github.com/anton-dergunov/workspace-backup/actions/workflows/test.yml/badge.svg)](https://github.com/anton-dergunov/workspace-backup/actions/workflows/test.yml)
 
-Lightweight Python orchestrator on top of [restic](https://restic.net) for
-backing up source code, ML projects, and research workspaces.
+A thin layer on top of [restic](https://restic.net), [resticprofile](https://creativeprojects.github.io/resticprofile/), and [rclone](https://rclone.org) for backing up source code, ML projects, and research workspaces.
 
-Restic handles storage, deduplication, encryption, retention, and restore.
-This tool handles everything around it: job configuration, a developer-friendly
-dry-run for curating exclude patterns, safety guardrails, structured logging,
-and macOS scheduling.
+## The three tools
 
-TBD
+| Tool | Purpose |
+|------|---------|
+| **[restic](https://restic.net)** | Deduplicating backup engine: encryption, snapshots, incremental backups, restore |
+| **[resticprofile](https://creativeprojects.github.io/resticprofile/)** | Config file + scheduling wrapper for restic. Define backup jobs and schedules once, run them reliably |
+| **[rclone](https://rclone.org)** | Cloud storage abstraction: Google Drive, S3, Dropbox, Azure, etc. Handles auth and transport |
 
-Install resticprofile: brew install resticprofile
-Docs: https://creativeprojects.github.io/resticprofile/
+This repo adds two utilities to make managing restic backups easier.
 
 ---
 
-## What it does
+## Getting started
 
-- **Config-driven jobs** — define source directories and restic repositories
-  in a single YAML file
-- **Dry-run mode** — scan source tree and show exactly which files are included
-  and excluded (with the matching rule), no repository needed
-- **Guardrails** — warn before backup (large files), warn after backup (size
-  growth ratio, new file extensions, file count jumps)
-- **Logging** — per-run timestamped logs with configurable retention
-- **Scheduling** — install/uninstall/status for a launchd agent that runs
-  hourly and skips if a recent backup already happened
+**See [SETUP.md](SETUP.md)** for installation and first-run instructions. It covers installing the three tools above, configuring your cloud remote, initializing a restic repository, and running your first backup.
+
+---
+
+## What this repo adds
+
+### Preview script
+
+**Purpose:** walk a directory tree with your restic exclude file and report which files would be included vs excluded — *without needing a configured restic repository*.
+
+The goal is to curate your exclude file so the restic repository stays small. ML and research workspaces especially accumulate large artifacts (`.ckpt`, `.pt`, `.safetensors`, model caches, datasets) that should be excluded.
+
+The repo includes `config/excludes.txt` as a starting point for Python and ML workspaces (venv, `__pycache__`, wandb, mlruns, model checkpoints, etc.).
+
+**Usage:**
+
+```bash
+python scripts/preview.py <source-directory> [options]
+
+Options:
+  --exclude-file FILE       Path to exclude patterns (default: ~/.config/restic/excludes)
+  --show included|excluded|both  What to display (default: both)
+  --min-size SIZE           Skip files below this size (e.g. 1MB, 500KB)
+  --summarize NAME          Collapse directories (e.g. .git); repeatable
+  --output FILE             Write report to .txt or .html file; omit for console
+```
+
+**Examples:**
+
+```bash
+# Quick preview of what's included
+python scripts/preview.py ~/projects --show included
+
+# HTML report with large artifacts collapsed
+python scripts/preview.py ~/projects --summarize .git --summarize node_modules --output /tmp/report.html
+
+# Focus on large files
+python scripts/preview.py ~/projects --min-size 50MB
+```
+
+### Guardrails (work in progress)
+
+A resticprofile `run-after` hook that warns when something unusual happened during a backup.
+
+**What it checks:**
+- Snapshot size grew more than 150% vs the previous snapshot
+- File count grew more than 200% vs the previous snapshot
+- New file extensions appeared that weren't in the previous snapshot
+
+**Status:** Currently has a known bug and is disabled in `profiles.yaml.sample`. It will be re-enabled and improved in a future update.
+
+**Notifications:** Sends macOS desktop alerts via `terminal-notifier`. Optional — only needed if you use guardrails.
+
+```bash
+# Install (optional, only for guardrails)
+brew install terminal-notifier
+```
+
+**Configuration:** Set environment variables when invoking the guardrail hook in your resticprofile config:
+
+```
+GUARDRAIL_MAX_GROWTH_RATIO=1.5
+GUARDRAIL_MAX_FILE_COUNT_GROWTH_RATIO=2.0
+GUARDRAIL_WARN_ON_NEW_EXTENSIONS=true
+```
 
 ---
 
 ## Requirements
 
-- macOS (scheduling layer; core backup logic is portable)
-- [restic](https://restic.net) — `brew install restic`
-- [rclone](https://rclone.org) — `brew install rclone` (if using cloud backends)
-- [terminal-notifier](https://github.com/julienXX/terminal-notifier) — `brew install terminal-notifier`
 - Python 3.10+
-
----
-
-## Quick start
-
-**1. Install dependencies**
-
-```bash
-brew install restic rclone terminal-notifier
-pip install -r requirements.txt
-```
-
-**2. Configure rclone remote** (if backing up to cloud)
-
-```bash
-rclone config
-```
-
-**3. Initialize restic repository**
-
-```bash
-export RESTIC_PASSWORD="your-password"
-restic -r rclone:gdrive:restic-backups init
-```
-
-**4. Edit config**
-
-```bash
-cp config/config.yaml.example config/config.yaml
-# edit jobs, repository URLs, thresholds
-```
-
-**5. Dry-run to check what would be backed up**
-
-```bash
-python backup.py dry-run
-```
-
-Review included/excluded files. Edit `excludes.txt` and repeat until the
-numbers look right.
-
-**6. Run first backup**
-
-```bash
-python backup.py run
-```
-
-**7. Set up automatic scheduling**
-
-```bash
-python backup.py schedule install
-python backup.py schedule status
-```
-
----
-
-## Dry-run output
-
-```
-Job: projects  (~/projects)
-
---- Included Files (12,433) ---
-projects/repo1/main.py
-...
-
---- Excluded Files (88,192) ---
-projects/repo1/.venv/bin/python    [rule: .venv/]
-projects/repo1/__pycache__/x.pyc   [rule: __pycache__/]
-...
-
---- Statistics ---
-Included:   12,433 files    2.1 GB
-Excluded:   88,192 files   48.0 GB
-
---- Largest Included Files ---
-512 MB  projects/data/sample.parquet
-
---- Largest Excluded Files ---
-42 GB   projects/checkpoints/full.ckpt
-```
-
----
-
-## Excluding files
-
-Edit `excludes.txt`. Uses restic's exclude file syntax (shell glob patterns,
-one per line, `#` for comments).
-
-To exclude a single directory without editing the global file, drop an empty
-`.nobackup` file in it:
-
-```bash
-touch some-large-dir/.nobackup
-```
-
-The orchestrator always passes `--exclude-if-present .nobackup` to restic.
-
----
-
-## Guardrails
-
-The following warnings are emitted and sent as macOS notifications:
-
-| Guardrail | When |
-|---|---|
-| Large file | pre-backup — any included file exceeds `max_file_size_mb` |
-| Size growth | post-backup — new snapshot is >150% of previous (configurable) |
-| New extensions | post-backup — file extensions not seen in previous snapshot |
-| File count growth | post-backup — file count grows beyond expected ratio |
-
-To remove files from past snapshots after a guardrail fires:
-
-```bash
-restic -r <repo> rewrite --exclude "*.so" --forget
-restic -r <repo> prune
-```
-
----
-
-## Scheduling
-
-The launchd agent fires every hour. The script checks the last restic snapshot
-time and skips if a backup occurred within `min_backup_interval_hours` (default
-20 hours). This handles irregular laptop usage without missing days.
-
-```bash
-python backup.py schedule install    # create and load agent
-python backup.py schedule uninstall  # remove agent
-python backup.py schedule status     # show state and last run
-```
-
----
-
-## Restore
-
-Restore is handled directly by restic:
-
-```bash
-# Restore latest snapshot
-restic -r rclone:gdrive:restic-backups restore latest --target ~/restored
-
-# List snapshots
-restic -r rclone:gdrive:restic-backups snapshots
-```
-
----
-
-## Configuration reference
-
-See `config/config.yaml` and `DESIGN.md` for full documentation.
+- [restic](https://restic.net) — `brew install restic`
+- [resticprofile](https://creativeprojects.github.io/resticprofile/) — `brew install resticprofile`
+- [rclone](https://rclone.org) — `brew install rclone`
+- [terminal-notifier](https://github.com/julienXX/terminal-notifier) — `brew install terminal-notifier` (optional, for guardrails only)

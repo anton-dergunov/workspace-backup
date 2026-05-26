@@ -35,8 +35,9 @@ def output_env(tmp_path):
 
 
 def _run(args: list, **kwargs) -> subprocess.CompletedProcess:
+    script = Path(__file__).parent.parent / "scripts" / "preview.py"
     return subprocess.run(
-        [sys.executable, "-m", "workspace_backup.preview", *args],
+        [sys.executable, str(script), *args],
         capture_output=True, text=True, timeout=30, **kwargs,
     )
 
