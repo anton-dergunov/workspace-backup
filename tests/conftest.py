@@ -1,5 +1,5 @@
 """
-Shared fixtures and helpers for restic_preview integration tests.
+Shared fixtures and helpers for integration tests.
 
 parse_restic_list() and classify() are the same logic that was in compare_restic.py,
 kept here so they're reused across all tests without a root-level helper script.
@@ -14,15 +14,21 @@ from collections import defaultdict
 from pathlib import Path
 
 import pytest
+import yaml
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 from preview import collect, _load_exclude, fmt_size
 
-# ── Skip marker ───────────────────────────────────────────────────────────────
+# ── Skip markers ──────────────────────────────────────────────────────────────
 
 skip_no_restic = pytest.mark.skipif(
     shutil.which("restic") is None,
     reason="restic not found (brew install restic)",
+)
+
+skip_no_resticprofile = pytest.mark.skipif(
+    shutil.which("resticprofile") is None,
+    reason="resticprofile not found (brew install resticprofile)",
 )
 
 # ── Restic list parsing (from compare_restic.py) ──────────────────────────────
@@ -232,3 +238,67 @@ def assert_no_discrepancies(report: dict, source: Path) -> None:
             + "\n".join(f"  {r}" for r in rels)
         )
     assert not parts, "\n\n".join(parts)
+
+
+# ── Guardrails fixtures and helpers ───────────────────────────────────────────
+
+GUARDRAILS_SCRIPT = Path(__file__).parent.parent / "scripts" / "guardrails.py"
+
+
+@pytest.fixture
+def tmp_guardrails_env(tmp_path):
+    """
+    Create a temp resticprofile config + restic repo for guardrails testing.
+    Yields (config_path, source_dir, profile_name).
+
+    The source_dir is empty; each test populates it before running backups.
+    """
+    repo         = tmp_path / "repo"
+    source       = tmp_path / "source"
+    password_file = tmp_path / "password"
+    config_file  = tmp_path / "profiles.yaml"
+
+    repo.mkdir()
+    source.mkdir()
+    password_file.write_text("test-guardrails-pw\n")
+
+    profile_name = "test"
+    config = {
+        "version": "1",
+        profile_name: {
+            "repository": str(repo),
+            "password-file": str(password_file),
+            "backup": {
+                "source": [str(source)],
+            },
+        },
+    }
+    config_file.write_text(yaml.dump(config))
+
+    subprocess.run(
+        ["resticprofile", "--config", str(config_file), "--name", profile_name, "init"],
+        check=True, capture_output=True, timeout=30,
+    )
+
+    yield config_file, source, profile_name
+
+
+def do_backup(config_path: Path, profile_name: str) -> None:
+    """Run resticprofile backup for the given profile."""
+    subprocess.run(
+        ["resticprofile", "--config", str(config_path), "--name", profile_name, "backup"],
+        check=True, capture_output=True, timeout=60,
+    )
+
+
+def run_guardrails(config_path: Path, profile_name: str, extra_args: list = None) -> subprocess.CompletedProcess:
+    """
+    Run guardrails.py as a subprocess with PROFILE_NAME set.
+    Returns the CompletedProcess (check return code yourself).
+    """
+    env = {**os.environ, "PROFILE_NAME": profile_name}
+    cmd = [
+        sys.executable, str(GUARDRAILS_SCRIPT),
+        "--resticprofile-config", str(config_path),
+    ] + (extra_args or [])
+    return subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=120)

@@ -93,3 +93,23 @@ GUARDRAIL_WARN_ON_NEW_EXTENSIONS=true
 - [resticprofile](https://creativeprojects.github.io/resticprofile/) — `brew install resticprofile`
 - [rclone](https://rclone.org) — `brew install rclone`
 - [terminal-notifier](https://github.com/julienXX/terminal-notifier) — `brew install terminal-notifier` (optional, for guardrails only)
+
+---
+
+## Running tests
+
+Install dev dependencies first:
+
+```bash
+pip install -e ".[dev]"
+```
+
+| Command | What runs | External tools needed |
+|---------|-----------|----------------------|
+| `pytest tests/test_guardrails_unit.py -v` | Guardrails unit tests | none |
+| `pytest tests/test_output_formats.py -v` | Preview output format tests | none |
+| `pytest tests/test_preview_integration.py -v` | Preview vs restic comparison | restic |
+| `pytest tests/test_guardrails_integration.py -v` | Guardrails end-to-end tests | restic + resticprofile |
+| `pytest -v` | All of the above | restic + resticprofile |
+
+Tests that require missing tools are automatically skipped rather than failing.

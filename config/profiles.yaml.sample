@@ -4,7 +4,6 @@
 # CONFIGURATION NOTES
 # ──────────────────────────────────────────────────────────────────────────────
 #
-# TODO Move all of these notes closer to where they are used
 # HOSTNAME TEMPLATES:
 #   Use {{ .Hostname }} to embed the machine hostname in repository paths.
 #   This allows the same config to be used across multiple machines with
@@ -12,7 +11,7 @@
 #     rclone:gdrive:restic-projects-{{ .Hostname }}
 #
 # EXCLUDE FILES:
-#   Specifies files to exclude. See config/excludes.txt for an example
+#   Specifies files to exclude. See config/excludes.txt for an example.
 #   Reference: https://restic.readthedocs.io/en/latest/040_backup.html
 #
 # EXCLUDE-IF-PRESENT:
@@ -20,29 +19,30 @@
 #   directory to exclude that entire directory from backups.
 #
 # SCHEDULING:
-# TODO Just provide a link to resticprofile doc
 #   For irregular laptop usage, use min-interval to implement smart skipping:
 #   - Schedule fires frequently (e.g. hourly)
-#   - Resticprofile checks last snapshot time
+#   - resticprofile checks last snapshot time
 #   - If it's too recent, job is skipped
 #   - This ensures daily backups without strict scheduling
+#   Reference: https://creativeprojects.github.io/resticprofile/schedules/
 #
 # GUARDRAILS (post-backup hook):
-#   The guardrails.py script runs after each successful backup.
-#   It checks:
-#   - Size growth ratio: warns if snapshot > 150% of previous
-#   - File count growth: warns if file count > 200% of previous
-#   - New extensions: warns if new file types appear
+#   guardrails.py runs after each successful backup via the run-after hook.
+#   resticprofile sets PROFILE_NAME in the environment automatically, which
+#   guardrails.py uses to call back into resticprofile for snapshot data.
 #
-#   It queries restic directly to get snapshot metrics:
-#     restic snapshots --latest 2 --json
-#     restic stats <snapshot>
-#     restic ls --json <snapshot>
+#   Configuration is passed as CLI arguments:
+#     --max-growth-ratio RATIO          size growth vs previous snapshot
+#     --max-file-count-growth-ratio R   file count growth vs previous snapshot
+#     --max-new-files N                 absolute new files per run
+#     --max-added-size SIZE             total data added (new+changed) per run
+#     --max-total-size SIZE             absolute total snapshot size cap
+#     --no-warn-on-new-extensions       disable new extension warnings
 #
-#   If guardrails violated, it:
-#   - Sends notification via terminal-notifier
-#   - Exits with non-zero to mark job as failed
-#   - (This fails the backup in resticprofile's job tracking)
+#   Size values accept KB, MB, GB, KiB, MiB, GiB suffixes.
+#
+#   On violation: sends a desktop notification via terminal-notifier (optional)
+#   and exits non-zero, marking the job as failed in resticprofile.
 #
 # RETENTION:
 #   The retention section runs the restic forget + prune workflow
@@ -60,8 +60,8 @@
 #      (or use --config flag to point to this directory)
 #   3. Configure rclone remotes: rclone config
 #   4. Initialize repositories:
-#      restic -r rclone:gdrive:restic-projects-$(hostname) init
-#   5. Test dry-run: resticprofile -n backup projects
+#      restic -r rclone:gdrive:restic-backup-$(hostname) init
+#   5. Test dry-run: resticprofile -n backup
 #   6. Install scheduling: resticprofile schedule
 
 
@@ -80,15 +80,22 @@ default:
       - workstation
 
     exclude-file:
-      - "/path/to/repo/config/excludes.txt"
+      - "/path/to/workspace-backup-repo/config/excludes.txt"
     exclude-if-present: ".nobackup"
     skip-if-unchanged: true
 
     schedule: hourly
     schedule-log: "/Users/YOUR_USERNAME/resticprofile-backup.log"
+    schedule-priority: background
 
-    # run-after:
-    #   - "python3 /Users/anton/projects/tools/workspace-backup/scripts/guardrails.py"
+    run-after:
+      - >-
+        python3 /path/to/workspace-backup-repo/scripts/guardrails.py
+        --max-growth-ratio 1.2
+        --max-file-count-growth-ratio 1.2
+        --max-new-files 100
+        --max-added-size 10MB
+        --max-total-size 5GB
 
   # retention:
   #   after-backup: true
