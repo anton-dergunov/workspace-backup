@@ -5,18 +5,23 @@ No external tools (restic, resticprofile) required.
 
 import sys
 from pathlib import Path
+from unittest.mock import call, patch
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 from guardrails import (
     _parse_size_to_bytes,
+    build_details,
+    build_short_message,
     check_added_size,
     check_file_count_growth,
     check_new_extensions,
     check_new_files_absolute,
     check_size_growth,
     check_total_size,
+    run_notify_commands,
+    write_log,
 )
 
 
@@ -221,3 +226,193 @@ def test_total_size_exactly_at_limit():
 
 def test_total_size_missing_key():
     assert check_total_size(_cfg(max_total_size=5 * 1024**3), {}) == []
+
+
+# ── build_short_message ───────────────────────────────────────────────────────
+
+_SNAP = {"id": "abc123ef0000", "time": "2026-05-27T10:05:30+01:00"}
+_PREV = {"id": "def456ab0000", "time": "2026-05-27T09:45:00+01:00"}
+
+
+def test_build_short_message_no_violations():
+    msg = build_short_message("default", [])
+    assert "All guardrails passed" in msg
+    assert "default" in msg
+
+
+def test_build_short_message_single_violation():
+    warnings = ["SIZE_GROWTH: snapshot grew 2.00x (0.45 GB → 0.95 GB), threshold is 1.20x"]
+    msg = build_short_message("default", warnings)
+    assert "1 violation(s)" in msg
+    assert "SIZE_GROWTH" in msg
+
+
+def test_build_short_message_multiple_violations():
+    warnings = [
+        "SIZE_GROWTH: grew 2x",
+        "NEW_FILES: 150 new files",
+        "ADDED_SIZE: 20 MiB added",
+    ]
+    msg = build_short_message("myprofile", warnings)
+    assert "3 violation(s)" in msg
+    assert "SIZE_GROWTH" in msg
+    assert "NEW_FILES" in msg
+    assert "ADDED_SIZE" in msg
+
+
+def test_build_short_message_truncates_beyond_3():
+    warnings = [f"WARN_{i}: something" for i in range(5)]
+    msg = build_short_message("p", warnings)
+    assert "5 violation(s)" in msg
+    assert "2 more violation(s)" in msg
+
+
+def test_build_short_message_with_new_files():
+    diff = {"new_file_paths": ["/a/b/file1.csv", "/a/b/file2.bin", "/a/b/file3.dat",
+                                "/a/b/file4.py"]}
+    msg = build_short_message("p", ["NEW_FILES: 4 new files"], diff)
+    assert "file1.csv" in msg
+    assert "+1 more" in msg
+
+
+# ── build_details ─────────────────────────────────────────────────────────────
+
+def test_build_details_contains_header():
+    details = build_details("default", _SNAP, _PREV, [], None)
+    assert "Backup Guardrail Report" in details
+    assert "default" in details
+    assert "abc123ef" in details
+    assert "def456ab" in details
+
+
+def test_build_details_lists_violations():
+    warnings = ["SIZE_GROWTH: grew 2x", "NEW_FILES: 50 added"]
+    details = build_details("default", _SNAP, _PREV, warnings, None)
+    assert "VIOLATIONS (2)" in details
+    assert "SIZE_GROWTH" in details
+    assert "NEW_FILES" in details
+
+
+def test_build_details_lists_new_files():
+    diff = {"new_file_paths": [f"/project/file{i}.py" for i in range(60)],
+            "modified_file_paths": []}
+    details = build_details("default", _SNAP, _PREV, [], diff)
+    assert "New files (60)" in details
+    assert "/project/file0.py" in details
+    assert "/project/file49.py" in details
+    assert "/project/file50.py" not in details
+    assert "and 10 more" in details
+
+
+def test_build_details_caps_modified_files():
+    diff = {"new_file_paths": [],
+            "modified_file_paths": [f"/src/mod{i}.py" for i in range(25)]}
+    details = build_details("default", _SNAP, _PREV, [], diff)
+    assert "Modified files (25)" in details
+    assert "/src/mod0.py" in details
+    assert "/src/mod19.py" in details
+    assert "/src/mod20.py" not in details
+    assert "and 5 more" in details
+
+
+def test_build_details_no_prev_snapshot():
+    details = build_details("default", _SNAP, None, [], None)
+    assert "none" in details.lower() or "first backup" in details.lower()
+    assert "abc123ef" in details
+
+
+# ── run_notify_commands ───────────────────────────────────────────────────────
+
+_CTX = {
+    "title": "Backup WARNING: 1 violation(s) in 'default'",
+    "message": "short message",
+    "details": "long details",
+    "profile": "default",
+    "status": "WARNING",
+    "violations": "1",
+}
+
+
+def test_run_notify_commands_substitutes_template():
+    with patch("guardrails.subprocess.run") as mock_run:
+        run_notify_commands(["echo '{title}' '{message}'"], _CTX)
+    assert mock_run.call_count == 1
+    cmd = mock_run.call_args[0][0]
+    assert _CTX["title"] in cmd
+    assert _CTX["message"] in cmd
+
+
+def test_run_notify_commands_no_env_vars_leaked():
+    with patch("guardrails.subprocess.run") as mock_run:
+        run_notify_commands(["echo hi"], _CTX)
+    _, kwargs = mock_run.call_args
+    assert "env" not in kwargs
+
+
+def test_run_notify_commands_multiple_templates():
+    templates = ["echo '{title}'", "echo '{message}'", "echo '{profile}'"]
+    with patch("guardrails.subprocess.run") as mock_run:
+        run_notify_commands(templates, _CTX)
+    assert mock_run.call_count == 3
+
+
+def test_run_notify_commands_empty_list():
+    with patch("guardrails.subprocess.run") as mock_run:
+        run_notify_commands([], _CTX)
+    mock_run.assert_not_called()
+
+
+def test_run_notify_commands_failed_silently():
+    with patch("guardrails.subprocess.run", side_effect=RuntimeError("boom")):
+        run_notify_commands(["echo hi"], _CTX)  # must not raise
+
+
+def test_run_notify_commands_unknown_placeholder(capsys):
+    with patch("guardrails.subprocess.run"):
+        run_notify_commands(["cmd {unknown_key}"], _CTX)
+    captured = capsys.readouterr()
+    assert "unknown_key" in captured.err or "unknown placeholder" in captured.err.lower()
+
+
+# ── write_log ─────────────────────────────────────────────────────────────────
+
+def test_write_log_creates_file(tmp_path):
+    log = tmp_path / "guardrails.log"
+    write_log(str(log), "hello world")
+    text = log.read_text()
+    assert "### " in text
+    assert "hello world" in text
+
+
+def test_write_log_multiple_runs(tmp_path):
+    log = tmp_path / "guardrails.log"
+    write_log(str(log), "run 1 content")
+    write_log(str(log), "run 2 content")
+    text = log.read_text()
+    assert "run 1 content" in text
+    assert "run 2 content" in text
+    assert text.count("### ") == 2
+
+
+def test_write_log_keeps_last_n(tmp_path):
+    log = tmp_path / "guardrails.log"
+    for i in range(5):
+        write_log(str(log), f"run {i}", keep_runs=3)
+    text = log.read_text()
+    assert text.count("### ") == 3
+    assert "run 2" in text
+    assert "run 3" in text
+    assert "run 4" in text
+    assert "run 0" not in text
+    assert "run 1" not in text
+
+
+def test_write_log_empty_path_noop(tmp_path):
+    write_log("", "should not create file")
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_write_log_bad_path_silent(capsys):
+    write_log("/nonexistent/dir/guardrails.log", "content")  # must not raise
+    captured = capsys.readouterr()
+    assert "Warning" in captured.err or captured.err == ""

@@ -35,7 +35,7 @@ jobs:
           brew install resticprofile
         else
           curl -fsSL https://raw.githubusercontent.com/creativeprojects/resticprofile/master/install.sh | sh
-          sudo mv resticprofile /usr/local/bin/
+          sudo mv ./bin/resticprofile /usr/local/bin/
         fi
       shell: bash
 

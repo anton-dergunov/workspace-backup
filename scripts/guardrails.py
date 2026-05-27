@@ -5,9 +5,20 @@ Runs as resticprofile run-after hook. Exit non-zero on guardrail violation.
 Environment (set automatically by resticprofile):
   PROFILE_NAME  — resticprofile profile name
 
-Usage in profiles.yaml:
-  run-after:
-    - "python3 /path/to/guardrails.py --max-growth-ratio 1.2 --max-new-files 100"
+Usage in profiles.yaml run-after:
+  python3 /path/to/guardrails.py
+    --max-growth-ratio 1.2 --max-new-files 100
+    --log ~/resticprofile-guardrails.log
+    --notify-short "apprise -t '{title}' -b '{message}' macosx://"
+    --notify-long  "apprise -t '{title}' -b '{details}' mailto://..."
+
+Template placeholders for --notify-short / --notify-long:
+  {title}      — one-line notification title
+  {message}    — compact multi-line summary (suitable for desktop)
+  {details}    — full report with file listings (suitable for email)
+  {profile}    — resticprofile profile name
+  {status}     — "WARNING" or "OK"
+  {violations} — number of violations as a string
 """
 
 import argparse
@@ -17,6 +28,7 @@ import re
 import subprocess
 import sys
 from collections import defaultdict
+from datetime import datetime
 
 # Set at startup from CLI args / env
 _PROFILE_NAME: str = ""
@@ -83,8 +95,8 @@ def run_resticprofile(args: list) -> str:
 
 def _extract_json(output: str, opening: str):
     """
-    Extract the first complete JSON value (array or object) from output that
-    may contain resticprofile log lines before and after the JSON.
+    Extract the first complete JSON value from output that may contain
+    resticprofile log lines before and after the JSON.
     Uses raw_decode to stop at the end of the first complete value.
     """
     start = output.find(opening)
@@ -127,23 +139,39 @@ def get_files(snapshot_id: str) -> list:
 def get_diff(snap1_id: str, snap2_id: str) -> dict:
     """
     Get diff stats between two snapshots.
-    Returns dict with new_files (int) and added_bytes (int).
+
+    Returns dict with:
+      new_files (int), added_bytes (int),
+      new_file_paths (list[str]), modified_file_paths (list[str])
     """
     output = run_resticprofile(["diff", snap1_id, snap2_id])
-    result = {"new_files": 0, "added_bytes": 0}
+    result: dict = {
+        "new_files": 0,
+        "added_bytes": 0,
+        "new_file_paths": [],
+        "modified_file_paths": [],
+    }
     for line in output.splitlines():
-        line = line.strip()
-        if line.startswith("Files:"):
-            m = re.search(r"(\d+)\s+new", line)
+        stripped = line.strip()
+        if stripped.startswith("Files:"):
+            m = re.search(r"(\d+)\s+new", stripped)
             if m:
                 result["new_files"] = int(m.group(1))
-        elif line.startswith("Added:"):
-            m = re.match(r"Added:\s+(.+)$", line)
+        elif stripped.startswith("Added:"):
+            m = re.match(r"Added:\s+(.+)$", stripped)
             if m:
                 try:
                     result["added_bytes"] = _parse_size_to_bytes(m.group(1).strip())
                 except ValueError:
                     pass
+        elif len(line) >= 2 and line[0] == " " and line[1] in ("+", "-", "M"):
+            indicator = line[1]
+            path = line[2:].strip()
+            if path:
+                if indicator == "+":
+                    result["new_file_paths"].append(path)
+                elif indicator == "M":
+                    result["modified_file_paths"].append(path)
     return result
 
 
@@ -250,18 +278,152 @@ def check_total_size(config: dict, curr_stats: dict) -> list:
     return warnings
 
 
-# ── Notification ──────────────────────────────────────────────────────────────
+# ── Notification content builders ─────────────────────────────────────────────
 
-def notify(severity: str, message: str) -> None:
-    """Send desktop notification via terminal-notifier (optional)."""
-    try:
-        subprocess.run(
-            ["terminal-notifier", "-title", f"Backup {severity}", "-message", message],
-            check=False,
-            timeout=5,
+def build_short_message(
+    profile: str,
+    all_warnings: list,
+    diff_stats: dict | None = None,
+) -> str:
+    """
+    Compact multi-line message suitable for desktop notifications.
+    Shows up to 3 violation summaries and the top new files.
+    """
+    if not all_warnings:
+        return f"[{profile}] All guardrails passed"
+
+    lines = [f"[{profile}] {len(all_warnings)} violation(s) detected"]
+    for w in all_warnings[:3]:
+        lines.append(w.splitlines()[0])
+    if len(all_warnings) > 3:
+        lines.append(f"... and {len(all_warnings) - 3} more violation(s)")
+
+    new_paths = (diff_stats or {}).get("new_file_paths", [])
+    if new_paths:
+        names = [os.path.basename(p) for p in new_paths[:3]]
+        suffix = f" (+{len(new_paths) - 3} more)" if len(new_paths) > 3 else ""
+        lines.append(f"New files: {', '.join(names)}{suffix}")
+
+    return "\n".join(lines)
+
+
+def build_details(
+    profile: str,
+    current_snapshot: dict,
+    prev_snapshot: dict | None,
+    all_warnings: list,
+    diff_stats: dict | None,
+) -> str:
+    """
+    Full multi-line report with violation details and file listings.
+    Suitable for email or log files.
+    """
+    sep = "=" * 70
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    lines = [
+        sep,
+        "Backup Guardrail Report",
+        sep,
+        f"Profile:          {profile}",
+        f"Time:             {ts}",
+        f"Current snapshot: {current_snapshot['id'][:8]} ({current_snapshot['time']})",
+    ]
+    if prev_snapshot:
+        lines.append(
+            f"Previous snapshot: {prev_snapshot['id'][:8]} ({prev_snapshot['time']})"
         )
-    except FileNotFoundError:
-        pass  # terminal-notifier is optional
+    else:
+        lines.append("Previous snapshot: (none — first backup)")
+    lines.append("")
+
+    if all_warnings:
+        lines.append(f"VIOLATIONS ({len(all_warnings)}):")
+        lines.append("")
+        for w in all_warnings:
+            lines.append(w)
+            lines.append("")
+    else:
+        lines.append("All guardrails passed.")
+        lines.append("")
+
+    if diff_stats:
+        new_paths = diff_stats.get("new_file_paths", [])
+        mod_paths = diff_stats.get("modified_file_paths", [])
+
+        if new_paths:
+            lines.append(f"New files ({len(new_paths)}):")
+            for p in new_paths[:50]:
+                lines.append(f"  + {p}")
+            if len(new_paths) > 50:
+                lines.append(f"  ... and {len(new_paths) - 50} more")
+            lines.append("")
+
+        if mod_paths:
+            lines.append(f"Modified files ({len(mod_paths)}):")
+            for p in mod_paths[:20]:
+                lines.append(f"  M {p}")
+            if len(mod_paths) > 20:
+                lines.append(f"  ... and {len(mod_paths) - 20} more")
+            lines.append("")
+
+    return "\n".join(lines)
+
+
+# ── Notification dispatch ─────────────────────────────────────────────────────
+
+def run_notify_commands(templates: list, context: dict) -> None:
+    """
+    Run each notification command template, substituting {placeholder} values.
+    Failures are printed to stderr and silently ignored.
+
+    Available placeholders: {title} {message} {details} {profile} {status} {violations}
+    """
+    for template in templates:
+        try:
+            cmd = template.format_map(context)
+            subprocess.run(cmd, shell=True, check=False, timeout=30, capture_output=True)
+        except KeyError as e:
+            print(f"Warning: unknown placeholder {e} in notify template: {template!r}",
+                  file=sys.stderr)
+        except Exception as e:
+            print(f"Warning: notification command failed: {e}", file=sys.stderr)
+
+
+# ── Log management ────────────────────────────────────────────────────────────
+
+_LOG_ENTRY_PATTERN = re.compile(
+    r"(?=^### \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} ###\n)", re.MULTILINE
+)
+
+
+def write_log(path: str, content: str, keep_runs: int = 100) -> None:
+    """
+    Append a timestamped entry to a log file, keeping at most keep_runs entries.
+    Each entry is prefixed with a ### DATETIME ### marker for splitting.
+    No-op when path is empty.
+    """
+    if not path:
+        return
+    try:
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        entry = f"### {ts} ###\n{content.rstrip()}\n"
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                text = f.read()
+        except FileNotFoundError:
+            text = ""
+
+        runs = [r for r in _LOG_ENTRY_PATTERN.split(text) if r.strip()]
+        runs.append(entry)
+
+        if keep_runs > 0 and len(runs) > keep_runs:
+            runs = runs[-keep_runs:]
+
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(runs))
+    except OSError as e:
+        print(f"Warning: could not write to log {path!r}: {e}", file=sys.stderr)
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -296,6 +458,32 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--no-warn-on-new-extensions", action="store_true",
         help="Disable warnings for new file extensions",
+    )
+    parser.add_argument(
+        "--notify-short", action="append", default=[], metavar="CMD_TEMPLATE",
+        dest="notify_short",
+        help=(
+            "Command template for short (desktop) notifications on violation. "
+            "Repeatable. Placeholders: {title} {message} {profile} {status} {violations}. "
+            "Example: \"apprise -t '{title}' -b '{message}' macosx://\""
+        ),
+    )
+    parser.add_argument(
+        "--notify-long", action="append", default=[], metavar="CMD_TEMPLATE",
+        dest="notify_long",
+        help=(
+            "Command template for detailed (email) notifications on violation. "
+            "Repeatable. Placeholders: {title} {details} {profile} {status} {violations}. "
+            "Example: \"apprise -t '{title}' -b '{details}' 'mailto://user:pass@gmail.com'\""
+        ),
+    )
+    parser.add_argument(
+        "--log", default="", metavar="PATH",
+        help="Append full guardrail report to this file on every run.",
+    )
+    parser.add_argument(
+        "--log-keep-runs", type=int, default=100, metavar="N",
+        help="Max number of runs to keep in the log file (oldest are dropped)",
     )
     parser.add_argument(
         "--resticprofile-config", default="", metavar="PATH",
@@ -355,6 +543,7 @@ def main():
     prev_exts  = extract_extensions(prev_files)
 
     all_warnings = []
+    diff_stats: dict | None = None
 
     print(f"\nSnapshot sizes:")
     print(f"  Current:  {curr_stats.get('total_size', 0) / (1<<30):.3f} GB  "
@@ -375,6 +564,28 @@ def main():
         all_warnings.extend(check_new_files_absolute(config, diff_stats))
         all_warnings.extend(check_added_size(config, diff_stats))
 
+    # Build notification context (used for log and notify commands)
+    status = "WARNING" if all_warnings else "OK"
+    if all_warnings:
+        title = f"Backup WARNING: {len(all_warnings)} violation(s) in '{_PROFILE_NAME}'"
+    else:
+        title = f"Backup OK: '{_PROFILE_NAME}' all guardrails passed"
+
+    message = build_short_message(_PROFILE_NAME, all_warnings, diff_stats)
+    details = build_details(
+        _PROFILE_NAME, current_snapshot, prev_snapshot, all_warnings, diff_stats
+    )
+    context = {
+        "title":      title,
+        "message":    message,
+        "details":    details,
+        "profile":    _PROFILE_NAME,
+        "status":     status,
+        "violations": str(len(all_warnings)),
+    }
+
+    write_log(args.log, details, args.log_keep_runs)
+
     if all_warnings:
         print("\n" + "=" * 70)
         print("GUARDRAIL VIOLATIONS DETECTED")
@@ -382,11 +593,11 @@ def main():
         for w in all_warnings:
             print(f"\n{w}")
         print()
-        notify("WARNING", f"{len(all_warnings)} guardrail violation(s) detected after backup")
+        run_notify_commands(args.notify_short, context)
+        run_notify_commands(args.notify_long, context)
         sys.exit(1)
     else:
         print("\n✓ All guardrails passed")
-        notify("Success", "Backup completed successfully")
         sys.exit(0)
 
 

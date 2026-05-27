@@ -58,30 +58,63 @@ python scripts/preview.py ~/projects --summarize .git --summarize node_modules -
 python scripts/preview.py ~/projects --min-size 50MB
 ```
 
-### Guardrails (work in progress)
+### Guardrails
 
-A resticprofile `run-after` hook that warns when something unusual happened during a backup.
+A resticprofile `run-after` hook that warns when something unusual happened in a backup. Run after every successful backup; exits non-zero on violation so resticprofile marks the job as failed.
 
 **What it checks:**
-- Snapshot size grew more than 150% vs the previous snapshot
-- File count grew more than 200% vs the previous snapshot
-- New file extensions appeared that weren't in the previous snapshot
 
-**Status:** Currently has a known bug and is disabled in `profiles.yaml.sample`. It will be re-enabled and improved in a future update.
+| Check | Flag | Default |
+|-------|------|---------|
+| Snapshot size grew too fast vs previous | `--max-growth-ratio` | 1.2× |
+| File count grew too fast vs previous | `--max-file-count-growth-ratio` | 1.2× |
+| New file extensions appeared | _(always on)_ | warn |
+| Too many new files added in one run | `--max-new-files` | 100 |
+| Too much data added in one run | `--max-added-size` | 10 MB |
+| Total snapshot too large | `--max-total-size` | 5 GB |
 
-**Notifications:** Sends macOS desktop alerts via `terminal-notifier`. Optional — only needed if you use guardrails.
+**Usage in `profiles.yaml`:**
+
+```yaml
+run-after:
+  - >-
+    python3 /path/to/workspace-backup/scripts/guardrails.py
+    --max-growth-ratio 1.2
+    --max-file-count-growth-ratio 1.2
+    --max-new-files 100
+    --max-added-size 10MB
+    --max-total-size 5GB
+    --log "~/resticprofile-guardrails.log"
+    --log-keep-runs 100
+    --notify-short "apprise -t '{title}' -b '{message}' macosx://"
+    --notify-long "apprise -t '{title}' -b '{details}' 'mailto://user:pass@smtp.example.com'"
+```
+
+See `config/profiles.yaml.sample` for the full annotated example.
+
+**Notifications:**
+
+Notifications use command templates with `{placeholder}` substitution. Any tool can be used:
 
 ```bash
-# Install (optional, only for guardrails)
-brew install terminal-notifier
+# macOS desktop notification via apprise
+--notify-short "apprise -t '{title}' -b '{message}' macosx://"
+
+# Email via apprise
+--notify-long "apprise -t '{title}' -b '{details}' 'mailto://user:pass@smtp.example.com'"
+
+# macOS desktop notification via terminal-notifier
+--notify-short "terminal-notifier -title '{title}' -message '{message}'"
 ```
 
-**Configuration:** Set environment variables when invoking the guardrail hook in your resticprofile config:
+Available placeholders: `{title}`, `{message}` (compact summary), `{details}` (full report with file listings), `{profile}`, `{status}`, `{violations}`.
 
-```
-GUARDRAIL_MAX_GROWTH_RATIO=1.5
-GUARDRAIL_MAX_FILE_COUNT_GROWTH_RATIO=2.0
-GUARDRAIL_WARN_ON_NEW_EXTENSIONS=true
+Both `--notify-short` and `--notify-long` are repeatable. **Notifications only fire on violations.** The log file (`--log`) is written on every run.
+
+Install [apprise](https://github.com/caronc/apprise) for multi-platform notifications (macOS, email, Slack, etc.):
+
+```bash
+pip install apprise
 ```
 
 ---
@@ -92,7 +125,7 @@ GUARDRAIL_WARN_ON_NEW_EXTENSIONS=true
 - [restic](https://restic.net) — `brew install restic`
 - [resticprofile](https://creativeprojects.github.io/resticprofile/) — `brew install resticprofile`
 - [rclone](https://rclone.org) — `brew install rclone`
-- [terminal-notifier](https://github.com/julienXX/terminal-notifier) — `brew install terminal-notifier` (optional, for guardrails only)
+- [apprise](https://github.com/caronc/apprise) — `pip install apprise` (optional, for guardrail notifications)
 
 ---
 

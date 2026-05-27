@@ -38,11 +38,26 @@
 #     --max-added-size SIZE             total data added (new+changed) per run
 #     --max-total-size SIZE             absolute total snapshot size cap
 #     --no-warn-on-new-extensions       disable new extension warnings
+#     --log PATH                        append full report to this file each run
+#     --log-keep-runs N                 max runs to retain in log (default: 100)
+#     --notify-short "CMD_TEMPLATE"     desktop/short notification on violation
+#     --notify-long  "CMD_TEMPLATE"     email/detailed notification on violation
 #
 #   Size values accept KB, MB, GB, KiB, MiB, GiB suffixes.
 #
-#   On violation: sends a desktop notification via terminal-notifier (optional)
-#   and exits non-zero, marking the job as failed in resticprofile.
+#   NOTIFICATION TEMPLATES:
+#   --notify-short and --notify-long accept a shell command template with
+#   {placeholder} substitution. Available placeholders:
+#     {title}      — one-line summary ("Backup WARNING: 2 violation(s) in 'default'")
+#     {message}    — compact multi-line text (suitable for desktop notifications)
+#     {details}    — full report with file listings (suitable for email)
+#     {profile}    — resticprofile profile name
+#     {status}     — "WARNING" or "OK"
+#     {violations} — number of violations as a string
+#   Both flags are repeatable (specify multiple notification commands).
+#   Notifications fire ONLY on violations; log is written on every run.
+#
+#   On violation: exits non-zero, marking the job as failed in resticprofile.
 #
 # RETENTION:
 #   The retention section runs the restic forget + prune workflow
@@ -96,6 +111,10 @@ default:
         --max-new-files 100
         --max-added-size 10MB
         --max-total-size 5GB
+        --log "/Users/YOUR_USERNAME/resticprofile-guardrails.log"
+        --log-keep-runs 100
+        --notify-short "apprise -t '{title}' -b '{message}' macosx://"
+        --notify-long "apprise -t '{title}' -b '{details}' 'mailto://YOUR_USER:YOUR_PASS@smtp.example.com'"
 
   # retention:
   #   after-backup: true
