@@ -147,6 +147,7 @@ def get_diff(snap1_id: str, snap2_id: str) -> dict:
     output = run_resticprofile(["diff", snap1_id, snap2_id])
     result: dict = {
         "new_files": 0,
+        "removed_files": 0,
         "added_bytes": 0,
         "removed_bytes": 0,
         "data_blobs_new": 0,
@@ -159,6 +160,9 @@ def get_diff(snap1_id: str, snap2_id: str) -> dict:
             m = re.search(r"(\d+)\s+new", stripped)
             if m:
                 result["new_files"] = int(m.group(1))
+            m2 = re.search(r"(\d+)\s+removed", stripped)
+            if m2:
+                result["removed_files"] = int(m2.group(1))
         elif stripped.startswith("Data Blobs:"):
             m = re.search(r"(\d+)\s+new", stripped)
             if m:
@@ -292,13 +296,29 @@ def check_removed_size(config: dict, diff_stats: dict) -> list:
     """
     warnings = []
     net_removed = max(0, diff_stats.get("removed_bytes", 0) - diff_stats.get("added_bytes", 0))
-    max_bytes = config["max_added_size"]
+    max_bytes = config["max_removed_size"]
     if net_removed > max_bytes:
         warnings.append(
             f"REMOVED_SIZE: {net_removed / (1<<20):.1f} MiB net data removed in this run "
             f"(added {diff_stats['added_bytes'] / (1<<20):.1f} MiB, "
             f"removed {diff_stats['removed_bytes'] / (1<<20):.1f} MiB), "
             f"threshold is {max_bytes / (1<<20):.1f} MiB"
+        )
+    return warnings
+
+
+def check_removed_files(config: dict, diff_stats: dict) -> list:
+    """Warn if too many files were net-removed in this backup run.
+
+    Uses removed−new so that moves within the backup scope (equal removed and
+    new counts) don't trigger false positives.
+    """
+    warnings = []
+    net_removed = max(0, diff_stats.get("removed_files", 0) - diff_stats.get("new_files", 0))
+    if net_removed > config["max_removed_files"]:
+        warnings.append(
+            f"REMOVED_FILES: {net_removed:,} files net removed in this run "
+            f"(threshold is {config['max_removed_files']:,})"
         )
     return warnings
 
@@ -486,7 +506,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-added-size", type=_argparse_size,
         default=_parse_size_to_bytes("10MB"), metavar="SIZE",
-        help="Max total data added (new+changed) per run, e.g. 10MB, 1GiB",
+        help="Max net data added per run (file modifications excluded), e.g. 10MB, 1GiB",
+    )
+    parser.add_argument(
+        "--max-removed-size", type=_argparse_size,
+        default=_parse_size_to_bytes("50MB"), metavar="SIZE",
+        help="Max net data removed per run (file modifications excluded), e.g. 50MB, 1GiB",
+    )
+    parser.add_argument(
+        "--max-removed-files", type=int, default=100, metavar="N",
+        help="Max number of files net-removed per backup run (moves within scope excluded)",
     )
     parser.add_argument(
         "--max-total-size", type=_argparse_size,
@@ -550,6 +579,8 @@ def main():
         "max_file_count_growth_ratio": args.max_file_count_growth_ratio,
         "max_new_files":               args.max_new_files,
         "max_added_size":              args.max_added_size,
+        "max_removed_size":            args.max_removed_size,
+        "max_removed_files":           args.max_removed_files,
         "max_total_size":              args.max_total_size,
         "warn_on_new_extensions":      not args.no_warn_on_new_extensions,
     }
@@ -602,10 +633,12 @@ def main():
         blob_note = f"{blobs} data blob(s)" if blobs else "metadata only"
         print(f"  Added this run: {diff_stats['added_bytes'] / (1<<20):.2f} MiB added, "
               f"{diff_stats['removed_bytes'] / (1<<20):.2f} MiB removed "
-              f"(net {net_mib:+.2f} MiB, {diff_stats['new_files']:,} new files, {blob_note})")
+              f"(net {net_mib:+.2f} MiB, {diff_stats['new_files']:,} new / "
+              f"{diff_stats['removed_files']:,} removed files, {blob_note})")
         all_warnings.extend(check_new_files_absolute(config, diff_stats))
         all_warnings.extend(check_added_size(config, diff_stats))
         all_warnings.extend(check_removed_size(config, diff_stats))
+        all_warnings.extend(check_removed_files(config, diff_stats))
 
     # Build notification context (used for log and notify commands)
     status = "WARNING" if all_warnings else "OK"

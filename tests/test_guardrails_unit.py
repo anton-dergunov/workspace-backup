@@ -18,6 +18,7 @@ from guardrails import (
     check_file_count_growth,
     check_new_extensions,
     check_new_files_absolute,
+    check_removed_files,
     check_removed_size,
     check_size_growth,
     check_total_size,
@@ -64,6 +65,8 @@ def _cfg(**kwargs):
         "max_file_count_growth_ratio": 1.2,
         "max_new_files": 100,
         "max_added_size": 10 * 1024**2,
+        "max_removed_size": 50 * 1024**2,
+        "max_removed_files": 100,
         "max_total_size": 5 * 1024**3,
         "warn_on_new_extensions": True,
     }
@@ -233,15 +236,15 @@ def test_added_size_with_data_blobs_violation():
 # ── check_removed_size ────────────────────────────────────────────────────────
 
 def test_removed_size_no_violation():
-    # Net removed = 5 MB — under threshold.
+    # Net removed = 5 MB — under 50 MB threshold.
     diff = {"added_bytes": 0, "removed_bytes": 5 * 1024**2}
-    assert check_removed_size(_cfg(max_added_size=10 * 1024**2), diff) == []
+    assert check_removed_size(_cfg(max_removed_size=50 * 1024**2), diff) == []
 
 
 def test_removed_size_violation():
-    # Net removed = 20 MB — over threshold.
-    diff = {"added_bytes": 0, "removed_bytes": 20 * 1024**2}
-    warnings = check_removed_size(_cfg(max_added_size=10 * 1024**2), diff)
+    # Net removed = 100 MB — over 50 MB threshold.
+    diff = {"added_bytes": 0, "removed_bytes": 100 * 1024**2}
+    warnings = check_removed_size(_cfg(max_removed_size=50 * 1024**2), diff)
     assert len(warnings) == 1
     assert "REMOVED_SIZE" in warnings[0]
     assert "net data removed" in warnings[0]
@@ -249,13 +252,46 @@ def test_removed_size_violation():
 
 def test_removed_size_zero():
     diff = {"added_bytes": 0, "removed_bytes": 0}
-    assert check_removed_size(_cfg(max_added_size=10 * 1024**2), diff) == []
+    assert check_removed_size(_cfg(), diff) == []
 
 
 def test_removed_size_file_modification_no_violation():
     # Files modified: removed ≈ added, net removed = 0.
     diff = {"added_bytes": 12 * 1024**2, "removed_bytes": 12 * 1024**2}
-    assert check_removed_size(_cfg(max_added_size=10 * 1024**2), diff) == []
+    assert check_removed_size(_cfg(max_removed_size=50 * 1024**2), diff) == []
+
+
+# ── check_removed_files ───────────────────────────────────────────────────────
+
+def test_removed_files_no_violation():
+    # Net removed = 50 — under default threshold of 100.
+    diff = {"new_files": 0, "removed_files": 50}
+    assert check_removed_files(_cfg(max_removed_files=100), diff) == []
+
+
+def test_removed_files_violation():
+    # Net removed = 200 — over threshold.
+    diff = {"new_files": 0, "removed_files": 200}
+    warnings = check_removed_files(_cfg(max_removed_files=100), diff)
+    assert len(warnings) == 1
+    assert "REMOVED_FILES" in warnings[0]
+
+
+def test_removed_files_zero():
+    diff = {"new_files": 0, "removed_files": 0}
+    assert check_removed_files(_cfg(), diff) == []
+
+
+def test_removed_files_net_zero_move():
+    # Files moved within backup scope: new_files ≈ removed_files, net = 0.
+    diff = {"new_files": 300, "removed_files": 300}
+    assert check_removed_files(_cfg(max_removed_files=100), diff) == []
+
+
+def test_removed_files_exactly_at_limit():
+    # Net = threshold — no violation (strict >).
+    diff = {"new_files": 0, "removed_files": 100}
+    assert check_removed_files(_cfg(max_removed_files=100), diff) == []
 
 
 # ── check_total_size ──────────────────────────────────────────────────────────
