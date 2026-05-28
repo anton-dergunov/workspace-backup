@@ -70,8 +70,13 @@ A resticprofile `run-after` hook that warns when something unusual happened in a
 | File count grew too fast vs previous | `--max-file-count-growth-ratio` | 1.2× |
 | New file extensions appeared | _(always on)_ | warn |
 | Too many new files added in one run | `--max-new-files` | 100 |
-| Too much data added in one run | `--max-added-size` | 10 MB |
+| Too much net data added in one run¹ | `--max-added-size` | 10 MB |
+| Too much net data removed in one run¹ | `--max-removed-size` | 50 MB |
+| Too many files net-removed in one run² | `--max-removed-files` | 100 |
 | Total snapshot too large | `--max-total-size` | 5 GB |
+
+¹ "Net" means file modifications are excluded — only genuine additions or deletions count. Moving files within the backup scope is also net-zero.  
+² Same net logic: files moved within scope count as both added and removed, so net ≈ 0.
 
 **Usage in `profiles.yaml`:**
 
@@ -83,6 +88,8 @@ run-after:
     --max-file-count-growth-ratio 1.2
     --max-new-files 100
     --max-added-size 10MB
+    --max-removed-size 50MB
+    --max-removed-files 100
     --max-total-size 5GB
     --log "~/resticprofile-guardrails.log"
     --log-keep-runs 100

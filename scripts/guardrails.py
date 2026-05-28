@@ -8,6 +8,7 @@ Environment (set automatically by resticprofile):
 Usage in profiles.yaml run-after:
   python3 /path/to/guardrails.py
     --max-growth-ratio 1.2 --max-new-files 100
+    --max-added-size 10MB --max-removed-size 50MB --max-removed-files 100
     --log ~/resticprofile-guardrails.log
     --notify-short "apprise -t '{title}' -b '{message}' macosx://"
     --notify-long  "apprise -t '{title}' -b '{details}' mailto://..."
