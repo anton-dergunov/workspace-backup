@@ -18,6 +18,7 @@ from guardrails import (
     check_file_count_growth,
     check_new_extensions,
     check_new_files_absolute,
+    check_removed_size,
     check_size_growth,
     check_total_size,
     run_notify_commands,
@@ -189,35 +190,72 @@ def test_new_files_absolute_one_over():
 # ── check_added_size ──────────────────────────────────────────────────────────
 
 def test_added_size_no_violation():
-    diff = {"new_files": 0, "added_bytes": 5 * 1024**2, "data_blobs_new": 3}
+    # Net = 5 MB (added only, no removed) — under threshold.
+    diff = {"new_files": 0, "added_bytes": 5 * 1024**2, "removed_bytes": 0, "data_blobs_new": 3}
     assert check_added_size(_cfg(max_added_size=10 * 1024**2), diff) == []
 
 
 def test_added_size_violation():
-    diff = {"new_files": 0, "added_bytes": 20 * 1024**2, "data_blobs_new": 5}
+    # Net = 20 MB (added only) — over threshold.
+    diff = {"new_files": 0, "added_bytes": 20 * 1024**2, "removed_bytes": 0, "data_blobs_new": 5}
     warnings = check_added_size(_cfg(max_added_size=10 * 1024**2), diff)
     assert len(warnings) == 1
     assert "ADDED_SIZE" in warnings[0]
-    assert "5 new data blob" in warnings[0]
+    assert "net new data" in warnings[0]
 
 
 def test_added_size_zero():
-    diff = {"new_files": 0, "added_bytes": 0, "data_blobs_new": 0}
+    diff = {"new_files": 0, "added_bytes": 0, "removed_bytes": 0, "data_blobs_new": 0}
     assert check_added_size(_cfg(max_added_size=10 * 1024**2), diff) == []
 
 
 def test_added_size_tree_only_no_violation():
-    # Large added_bytes but zero data blobs — pure directory metadata churn.
-    diff = {"new_files": 0, "added_bytes": 12 * 1024**2, "data_blobs_new": 0}
+    # Tree-blob churn: added ≈ removed, net = 0.
+    diff = {"new_files": 0, "added_bytes": 12 * 1024**2, "removed_bytes": 12 * 1024**2, "data_blobs_new": 0}
+    assert check_added_size(_cfg(max_added_size=10 * 1024**2), diff) == []
+
+
+def test_added_size_file_modification_no_violation():
+    # Files modified: gross Added and Removed both large, net ≈ 0.
+    diff = {"new_files": 0, "added_bytes": 12 * 1024**2, "removed_bytes": 12 * 1024**2, "data_blobs_new": 16}
     assert check_added_size(_cfg(max_added_size=10 * 1024**2), diff) == []
 
 
 def test_added_size_with_data_blobs_violation():
-    diff = {"new_files": 2, "added_bytes": 50 * 1024**2, "data_blobs_new": 12}
+    # Truly new large data (no matching removed).
+    diff = {"new_files": 2, "added_bytes": 50 * 1024**2, "removed_bytes": 0, "data_blobs_new": 12}
     warnings = check_added_size(_cfg(max_added_size=10 * 1024**2), diff)
     assert len(warnings) == 1
     assert "ADDED_SIZE" in warnings[0]
-    assert "12 new data blob" in warnings[0]
+    assert "net new data" in warnings[0]
+
+
+# ── check_removed_size ────────────────────────────────────────────────────────
+
+def test_removed_size_no_violation():
+    # Net removed = 5 MB — under threshold.
+    diff = {"added_bytes": 0, "removed_bytes": 5 * 1024**2}
+    assert check_removed_size(_cfg(max_added_size=10 * 1024**2), diff) == []
+
+
+def test_removed_size_violation():
+    # Net removed = 20 MB — over threshold.
+    diff = {"added_bytes": 0, "removed_bytes": 20 * 1024**2}
+    warnings = check_removed_size(_cfg(max_added_size=10 * 1024**2), diff)
+    assert len(warnings) == 1
+    assert "REMOVED_SIZE" in warnings[0]
+    assert "net data removed" in warnings[0]
+
+
+def test_removed_size_zero():
+    diff = {"added_bytes": 0, "removed_bytes": 0}
+    assert check_removed_size(_cfg(max_added_size=10 * 1024**2), diff) == []
+
+
+def test_removed_size_file_modification_no_violation():
+    # Files modified: removed ≈ added, net removed = 0.
+    diff = {"added_bytes": 12 * 1024**2, "removed_bytes": 12 * 1024**2}
+    assert check_removed_size(_cfg(max_added_size=10 * 1024**2), diff) == []
 
 
 # ── check_total_size ──────────────────────────────────────────────────────────

@@ -148,6 +148,7 @@ def get_diff(snap1_id: str, snap2_id: str) -> dict:
     result: dict = {
         "new_files": 0,
         "added_bytes": 0,
+        "removed_bytes": 0,
         "data_blobs_new": 0,
         "new_file_paths": [],
         "modified_file_paths": [],
@@ -167,6 +168,13 @@ def get_diff(snap1_id: str, snap2_id: str) -> dict:
             if m:
                 try:
                     result["added_bytes"] = _parse_size_to_bytes(m.group(1).strip())
+                except ValueError:
+                    pass
+        elif stripped.startswith("Removed:"):
+            m = re.match(r"Removed:\s+(.+)$", stripped)
+            if m:
+                try:
+                    result["removed_bytes"] = _parse_size_to_bytes(m.group(1).strip())
                 except ValueError:
                     pass
         elif len(line) >= 2 and line[0] == " " and line[1] in ("+", "-", "M"):
@@ -258,21 +266,39 @@ def check_new_files_absolute(config: dict, diff_stats: dict) -> list:
 
 
 def check_added_size(config: dict, diff_stats: dict) -> list:
-    """Warn if too much data (new + changed) was added in this backup run.
+    """Warn if net new data added in this run exceeds threshold.
 
-    Only fires when new data blobs exist; pure tree-blob churn (directory
-    metadata / mtime changes) is ignored.
+    Uses Added−Removed so that file modifications (matching added/removed blobs)
+    don't trigger false positives.
     """
     warnings = []
-    if diff_stats.get("data_blobs_new", 0) == 0:
-        return warnings
-    added = diff_stats.get("added_bytes", 0)
+    net_bytes = max(0, diff_stats.get("added_bytes", 0) - diff_stats.get("removed_bytes", 0))
     max_bytes = config["max_added_size"]
-    if added > max_bytes:
-        blobs = diff_stats["data_blobs_new"]
+    if net_bytes > max_bytes:
         warnings.append(
-            f"ADDED_SIZE: {added / (1<<20):.1f} MiB added in this run "
-            f"({blobs} new data blob(s)), threshold is {max_bytes / (1<<20):.1f} MiB"
+            f"ADDED_SIZE: {net_bytes / (1<<20):.1f} MiB net new data in this run "
+            f"(added {diff_stats['added_bytes'] / (1<<20):.1f} MiB, "
+            f"removed {diff_stats['removed_bytes'] / (1<<20):.1f} MiB), "
+            f"threshold is {max_bytes / (1<<20):.1f} MiB"
+        )
+    return warnings
+
+
+def check_removed_size(config: dict, diff_stats: dict) -> list:
+    """Warn if net data removed in this run exceeds threshold.
+
+    Uses Removed−Added so that file modifications (matching removed/added blobs)
+    don't trigger false positives.
+    """
+    warnings = []
+    net_removed = max(0, diff_stats.get("removed_bytes", 0) - diff_stats.get("added_bytes", 0))
+    max_bytes = config["max_added_size"]
+    if net_removed > max_bytes:
+        warnings.append(
+            f"REMOVED_SIZE: {net_removed / (1<<20):.1f} MiB net data removed in this run "
+            f"(added {diff_stats['added_bytes'] / (1<<20):.1f} MiB, "
+            f"removed {diff_stats['removed_bytes'] / (1<<20):.1f} MiB), "
+            f"threshold is {max_bytes / (1<<20):.1f} MiB"
         )
     return warnings
 
@@ -571,12 +597,15 @@ def main():
 
     if prev_snapshot:
         diff_stats = get_diff(prev_snapshot["id"], current_snapshot["id"])
+        net_mib = (diff_stats["added_bytes"] - diff_stats["removed_bytes"]) / (1 << 20)
         blobs = diff_stats["data_blobs_new"]
         blob_note = f"{blobs} data blob(s)" if blobs else "metadata only"
-        print(f"  Added this run: {diff_stats['added_bytes'] / (1<<20):.2f} MiB  "
-              f"({diff_stats['new_files']:,} new files, {blob_note})")
+        print(f"  Added this run: {diff_stats['added_bytes'] / (1<<20):.2f} MiB added, "
+              f"{diff_stats['removed_bytes'] / (1<<20):.2f} MiB removed "
+              f"(net {net_mib:+.2f} MiB, {diff_stats['new_files']:,} new files, {blob_note})")
         all_warnings.extend(check_new_files_absolute(config, diff_stats))
         all_warnings.extend(check_added_size(config, diff_stats))
+        all_warnings.extend(check_removed_size(config, diff_stats))
 
     # Build notification context (used for log and notify commands)
     status = "WARNING" if all_warnings else "OK"
