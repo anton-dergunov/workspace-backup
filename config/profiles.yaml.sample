@@ -35,7 +35,9 @@
 #     --max-growth-ratio RATIO          size growth vs previous snapshot
 #     --max-file-count-growth-ratio R   file count growth vs previous snapshot
 #     --max-new-files N                 absolute new files per run
-#     --max-added-size SIZE             total data added (new+changed) per run
+#     --max-added-size SIZE             net data added per run (modifications excluded)
+#     --max-removed-size SIZE           net data removed per run (modifications excluded)
+#     --max-removed-files N             net files removed per run (moves within scope excluded)
 #     --max-total-size SIZE             absolute total snapshot size cap
 #     --no-warn-on-new-extensions       disable new extension warnings
 #     --log PATH                        append full report to this file each run
@@ -110,6 +112,8 @@ default:
         --max-file-count-growth-ratio 1.2
         --max-new-files 100
         --max-added-size 10MB
+        --max-removed-size 50MB
+        --max-removed-files 100
         --max-total-size 5GB
         --log "/Users/YOUR_USERNAME/resticprofile-guardrails.log"
         --log-keep-runs 100
