@@ -75,7 +75,7 @@ A resticprofile `run-after` hook that warns when something unusual happened in a
 | Too many files net-removed in one run² | `--max-removed-files` | 100 |
 | Total snapshot too large | `--max-total-size` | 5 GB |
 
-¹ "Net" means file modifications are excluded — only genuine additions or deletions count. Moving files within the backup scope is also net-zero.  
+¹ "Net" means file modifications are excluded — only genuine additions or deletions count. Moving files within the backup scope is also net-zero.
 ² Same net logic: files moved within scope count as both added and removed, so net ≈ 0.
 
 **Usage in `profiles.yaml`:**
@@ -117,6 +117,33 @@ Notifications use command templates with `{placeholder}` substitution. Any tool 
 Available placeholders: `{title}`, `{message}` (compact summary), `{details}` (full report with file listings), `{profile}`, `{status}`, `{violations}`.
 
 Both `--notify-short` and `--notify-long` are repeatable. **Notifications only fire on violations.** The log file (`--log`) is written on every run.
+
+**If guardrails flag a path that shouldn't have been backed up:**
+
+1. Add an exclude pattern to prevent it from being included in future backups.
+2. Remove it from existing snapshots with `restic rewrite` (requires restic ≥ 0.16):
+
+```bash
+# Remove from latest snapshot only
+resticprofile rewrite --exclude /path/to/dir latest
+
+# Remove from all snapshots
+resticprofile rewrite --exclude /path/to/dir --all
+```
+
+Then clean up orphaned data:
+
+```bash
+resticprofile prune
+```
+
+If `prune` fails with a stale lock error, unlock first:
+
+```bash
+resticprofile unlock && resticprofile prune
+```
+
+Run `resticprofile check` afterward to verify repository integrity.
 
 Install [apprise](https://github.com/caronc/apprise) for multi-platform notifications (macOS, email, Slack, etc.):
 
