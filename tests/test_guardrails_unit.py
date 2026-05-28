@@ -189,20 +189,35 @@ def test_new_files_absolute_one_over():
 # ── check_added_size ──────────────────────────────────────────────────────────
 
 def test_added_size_no_violation():
-    diff = {"new_files": 0, "added_bytes": 5 * 1024**2}   # 5 MB
+    diff = {"new_files": 0, "added_bytes": 5 * 1024**2, "data_blobs_new": 3}
     assert check_added_size(_cfg(max_added_size=10 * 1024**2), diff) == []
 
 
 def test_added_size_violation():
-    diff = {"new_files": 0, "added_bytes": 20 * 1024**2}  # 20 MB
+    diff = {"new_files": 0, "added_bytes": 20 * 1024**2, "data_blobs_new": 5}
     warnings = check_added_size(_cfg(max_added_size=10 * 1024**2), diff)
     assert len(warnings) == 1
     assert "ADDED_SIZE" in warnings[0]
+    assert "5 new data blob" in warnings[0]
 
 
 def test_added_size_zero():
-    diff = {"new_files": 0, "added_bytes": 0}
+    diff = {"new_files": 0, "added_bytes": 0, "data_blobs_new": 0}
     assert check_added_size(_cfg(max_added_size=10 * 1024**2), diff) == []
+
+
+def test_added_size_tree_only_no_violation():
+    # Large added_bytes but zero data blobs — pure directory metadata churn.
+    diff = {"new_files": 0, "added_bytes": 12 * 1024**2, "data_blobs_new": 0}
+    assert check_added_size(_cfg(max_added_size=10 * 1024**2), diff) == []
+
+
+def test_added_size_with_data_blobs_violation():
+    diff = {"new_files": 2, "added_bytes": 50 * 1024**2, "data_blobs_new": 12}
+    warnings = check_added_size(_cfg(max_added_size=10 * 1024**2), diff)
+    assert len(warnings) == 1
+    assert "ADDED_SIZE" in warnings[0]
+    assert "12 new data blob" in warnings[0]
 
 
 # ── check_total_size ──────────────────────────────────────────────────────────

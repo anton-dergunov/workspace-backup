@@ -148,6 +148,7 @@ def get_diff(snap1_id: str, snap2_id: str) -> dict:
     result: dict = {
         "new_files": 0,
         "added_bytes": 0,
+        "data_blobs_new": 0,
         "new_file_paths": [],
         "modified_file_paths": [],
     }
@@ -157,6 +158,10 @@ def get_diff(snap1_id: str, snap2_id: str) -> dict:
             m = re.search(r"(\d+)\s+new", stripped)
             if m:
                 result["new_files"] = int(m.group(1))
+        elif stripped.startswith("Data Blobs:"):
+            m = re.search(r"(\d+)\s+new", stripped)
+            if m:
+                result["data_blobs_new"] = int(m.group(1))
         elif stripped.startswith("Added:"):
             m = re.match(r"Added:\s+(.+)$", stripped)
             if m:
@@ -253,14 +258,21 @@ def check_new_files_absolute(config: dict, diff_stats: dict) -> list:
 
 
 def check_added_size(config: dict, diff_stats: dict) -> list:
-    """Warn if too much data (new + changed) was added in this backup run."""
+    """Warn if too much data (new + changed) was added in this backup run.
+
+    Only fires when new data blobs exist; pure tree-blob churn (directory
+    metadata / mtime changes) is ignored.
+    """
     warnings = []
+    if diff_stats.get("data_blobs_new", 0) == 0:
+        return warnings
     added = diff_stats.get("added_bytes", 0)
     max_bytes = config["max_added_size"]
     if added > max_bytes:
+        blobs = diff_stats["data_blobs_new"]
         warnings.append(
-            f"ADDED_SIZE: {added / (1<<20):.1f} MiB added in this run, "
-            f"threshold is {max_bytes / (1<<20):.1f} MiB"
+            f"ADDED_SIZE: {added / (1<<20):.1f} MiB added in this run "
+            f"({blobs} new data blob(s)), threshold is {max_bytes / (1<<20):.1f} MiB"
         )
     return warnings
 
@@ -559,8 +571,10 @@ def main():
 
     if prev_snapshot:
         diff_stats = get_diff(prev_snapshot["id"], current_snapshot["id"])
+        blobs = diff_stats["data_blobs_new"]
+        blob_note = f"{blobs} data blob(s)" if blobs else "metadata only"
         print(f"  Added this run: {diff_stats['added_bytes'] / (1<<20):.2f} MiB  "
-              f"({diff_stats['new_files']:,} new files)")
+              f"({diff_stats['new_files']:,} new files, {blob_note})")
         all_warnings.extend(check_new_files_absolute(config, diff_stats))
         all_warnings.extend(check_added_size(config, diff_stats))
 
