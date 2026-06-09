@@ -11,16 +11,23 @@ Usage in profiles.yaml run-after:
     --max-added-size 10MB --max-removed-size 50MB --max-removed-files 100
     --log ~/resticprofile-guardrails.log
     --notify-short "apprise -t '{title}' -b '{message}' macosx://"
-    --notify-long  "apprise -t '{title}' -b '{details}' mailto://..."
+    --notify-long  "apprise -i html -t '{title}' mailto://... < {details_html_file}"
 
 Template placeholders for --notify-short / --notify-long:
-  {title}        — one-line notification title
-  {message}      — compact multi-line summary (suitable for desktop)
-  {details}      — full plain-text report with file listings and next-step commands
-  {details_html} — same report as a styled HTML document (use with apprise -i html)
-  {profile}      — resticprofile profile name
-  {status}       — "WARNING" or "OK"
-  {violations}   — number of violations as a string
+  {title}             — one-line notification title
+  {message}           — compact multi-line summary (suitable for desktop)
+  {details}           — full plain-text report with file listings and next-step commands
+  {details_html}      — same report as a styled HTML document (use with apprise -i html)
+  {details_file}      — path to a temp file holding {details} (auto-created/removed)
+  {details_html_file} — path to a temp file holding {details_html} (auto-created/removed)
+  {profile}           — resticprofile profile name
+  {status}            — "WARNING" or "OK"
+  {violations}        — number of violations as a string
+
+For large bodies (especially HTML), prefer the *_file placeholders and redirect
+them into the sender's stdin (e.g. "apprise ... < {details_html_file}"). Inlining
+{details_html} into a quoted -b argument is fragile: any quote character in the
+content can break shell parsing and produce an empty body.
 """
 
 import argparse
@@ -30,6 +37,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 from collections import defaultdict
 from datetime import datetime
 from html import escape as _esc
@@ -656,7 +664,7 @@ def build_details(
 # ── HTML notification (for email clients that render it) ──────────────────────
 
 _EMAIL_CSS = """
-body{font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+body{font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
   color:#24292f;background:#f6f8fa;margin:0;padding:24px;line-height:1.5}
 .wrap{max-width:760px;margin:0 auto;background:#fff;border:1px solid #d0d7de;
   border-radius:8px;overflow:hidden}
@@ -785,22 +793,54 @@ def build_details_html(
 
 # ── Notification dispatch ─────────────────────────────────────────────────────
 
+# Placeholders that materialize a context value into a temp file and substitute
+# the file path. Lets large/HTML bodies be redirected into a sender's stdin
+# instead of being inlined (and quote-mangled) in the shell command string.
+_FILE_PLACEHOLDERS = {
+    "details_file":      ("details",      ".txt"),
+    "details_html_file": ("details_html", ".html"),
+}
+
+
 def run_notify_commands(templates: list, context: dict) -> None:
     """
     Run each notification command template, substituting {placeholder} values.
     Failures are printed to stderr and silently ignored.
 
-    Available placeholders: {title} {message} {details} {profile} {status} {violations}
+    Available placeholders: {title} {message} {details} {details_html}
+    {details_file} {details_html_file} {profile} {status} {violations}
+
+    The *_file placeholders write the corresponding content to a temp file and
+    substitute its path (shell-safe), so callers can redirect it into the
+    sender's stdin, e.g. "apprise -i html ... < {details_html_file}".
     """
     for template in templates:
+        ctx = context
+        tmp_paths: list = []
         try:
-            cmd = template.format_map(context)
+            for ph, (src_key, suffix) in _FILE_PLACEHOLDERS.items():
+                if "{" + ph + "}" not in template:
+                    continue
+                fd, path = tempfile.mkstemp(prefix="guardrails-", suffix=suffix)
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(context.get(src_key, ""))
+                if ctx is context:
+                    ctx = dict(context)
+                ctx[ph] = path
+                tmp_paths.append(path)
+            cmd = template.format_map(ctx)
             subprocess.run(cmd, shell=True, check=False, timeout=30, capture_output=True)
         except KeyError as e:
             print(f"Warning: unknown placeholder {e} in notify template: {template!r}",
                   file=sys.stderr)
         except Exception as e:
             print(f"Warning: notification command failed: {e}", file=sys.stderr)
+        finally:
+            for path in tmp_paths:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
 
 
 # ── Log management ────────────────────────────────────────────────────────────
@@ -896,9 +936,10 @@ def parse_args() -> argparse.Namespace:
         dest="notify_long",
         help=(
             "Command template for detailed (email) notifications on violation. "
-            "Repeatable. Placeholders: {title} {details} {details_html} {profile} "
-            "{status} {violations}. Use {details_html} with an HTML-capable sender, "
-            "e.g. \"apprise -i html -t '{title}' -b '{details_html}' 'mailto://user:pass@gmail.com'\""
+            "Repeatable. Placeholders: {title} {details} {details_html} "
+            "{details_file} {details_html_file} {profile} {status} {violations}. "
+            "Prefer redirecting a *_file placeholder into stdin for HTML bodies, "
+            "e.g. \"apprise -i html -t '{title}' 'mailto://user:pass@gmail.com' < {details_html_file}\""
         ),
     )
     parser.add_argument(

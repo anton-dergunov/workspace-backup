@@ -54,6 +54,10 @@
 #     {message}      — compact multi-line text (suitable for desktop notifications)
 #     {details}      — full plain-text report: file listings + next-step commands
 #     {details_html} — same report as styled HTML (use with apprise -i html)
+#     {details_file} / {details_html_file} — path to a temp file holding the
+#                      plain/HTML report; redirect into the sender's stdin (e.g.
+#                      "apprise -i html ... < {details_html_file}"). Preferred for
+#                      HTML: avoids quote-mangling that can yield an empty body.
 #     {profile}      — resticprofile profile name
 #     {status}       — "WARNING" or "OK"
 #     {violations}   — number of violations as a string
@@ -119,7 +123,7 @@ default:
         --log "/Users/YOUR_USERNAME/resticprofile-guardrails.log"
         --log-keep-runs 100
         --notify-short "apprise -t '{title}' -b '{message}' macosx://"
-        --notify-long "apprise -i html -t '{title}' -b '{details_html}' 'mailto://YOUR_USER:YOUR_PASS@smtp.example.com'"
+        --notify-long "apprise -i html -t '{title}' 'mailto://YOUR_USER:YOUR_PASS@smtp.example.com' < {details_html_file}"
 
   # retention:
   #   after-backup: true

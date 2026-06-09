@@ -110,14 +110,16 @@ Notifications use command templates with `{placeholder}` substitution. Any tool 
 # Plain-text email via apprise
 --notify-long "apprise -t '{title}' -b '{details}' 'mailto://user:pass@smtp.example.com'"
 
-# Styled HTML email via apprise (note -i html and {details_html})
---notify-long "apprise -i html -t '{title}' -b '{details_html}' 'mailto://user:pass@smtp.example.com'"
+# Styled HTML email via apprise — redirect the report into stdin via {details_html_file}
+# (preferred over inlining {details_html} into -b, which can break shell quoting
+#  and produce an empty body)
+--notify-long "apprise -i html -t '{title}' 'mailto://user:pass@smtp.example.com' < {details_html_file}"
 
 # macOS desktop notification via terminal-notifier
 --notify-short "terminal-notifier -title '{title}' -message '{message}'"
 ```
 
-Available placeholders: `{title}`, `{message}` (compact summary), `{details}` (full plain-text report with file listings and next-step commands), `{details_html}` (the same report as a styled HTML document, for HTML-capable email), `{profile}`, `{status}`, `{violations}`.
+Available placeholders: `{title}`, `{message}` (compact summary), `{details}` (full plain-text report with file listings and next-step commands), `{details_html}` (the same report as a styled HTML document, for HTML-capable email), `{details_file}` / `{details_html_file}` (paths to temp files holding the plain/HTML report — redirect into the sender's stdin; preferred for HTML to avoid shell-quoting issues), `{profile}`, `{status}`, `{violations}`.
 
 Both `--notify-short` and `--notify-long` are repeatable. **Notifications only fire on violations.** The log file (`--log`) is written on every run.
 

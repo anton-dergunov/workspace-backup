@@ -3,6 +3,7 @@ Unit tests for guardrails.py check functions.
 No external tools (restic, resticprofile) required.
 """
 
+import os
 import sys
 from pathlib import Path
 from unittest.mock import call, patch
@@ -498,6 +499,35 @@ def test_run_notify_commands_unknown_placeholder(capsys):
         run_notify_commands(["cmd {unknown_key}"], _CTX)
     captured = capsys.readouterr()
     assert "unknown_key" in captured.err or "unknown placeholder" in captured.err.lower()
+
+
+def test_run_notify_commands_details_html_file_stdin(tmp_path):
+    # HTML body containing a single quote would break a quoted -b argument;
+    # the *_file placeholder + stdin redirect must deliver it intact.
+    out = tmp_path / "body.html"
+    ctx = dict(_CTX, details_html="<style>font-family:'Segoe UI'</style><b>hi</b>")
+
+    created = []
+    real_mkstemp = guardrails.tempfile.mkstemp
+
+    def spy(*args, **kwargs):
+        fd, path = real_mkstemp(*args, **kwargs)
+        created.append(path)
+        return fd, path
+
+    with patch("guardrails.tempfile.mkstemp", side_effect=spy):
+        run_notify_commands([f"cat {{details_html_file}} > {out}"], ctx)
+
+    assert out.read_text() == ctx["details_html"]
+    # Temp file is removed after the command runs.
+    assert created and all(not os.path.exists(p) for p in created)
+
+
+def test_run_notify_commands_no_temp_file_when_unused():
+    with patch("guardrails.tempfile.mkstemp") as mock_mkstemp, \
+            patch("guardrails.subprocess.run"):
+        run_notify_commands(["echo '{title}'"], _CTX)
+    mock_mkstemp.assert_not_called()
 
 
 # ── write_log ─────────────────────────────────────────────────────────────────
