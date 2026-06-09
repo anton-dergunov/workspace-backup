@@ -190,6 +190,36 @@ def test_new_files_absolute_one_over():
     assert len(check_new_files_absolute(_cfg(max_new_files=100), diff)) == 1
 
 
+def test_new_files_absolute_lists_paths():
+    diff = {"new_files": 150, "added_bytes": 0,
+            "new_file_paths": [f"/project/file{i}.csv" for i in range(150)]}
+    warnings = check_new_files_absolute(_cfg(max_new_files=100), diff)
+    assert len(warnings) == 1
+    msg = warnings[0]
+    # First NEW_FILES_LISTED (20) paths are listed, the rest are summarized.
+    assert "/project/file0.csv" in msg
+    assert "/project/file19.csv" in msg
+    assert "/project/file20.csv" not in msg
+    assert "and 130 more" in msg
+
+
+def test_new_files_absolute_lists_all_when_few():
+    diff = {"new_files": 105, "added_bytes": 0,
+            "new_file_paths": [f"/p/f{i}.txt" for i in range(105)][:5]}
+    warnings = check_new_files_absolute(_cfg(max_new_files=100), diff)
+    msg = warnings[0]
+    assert "/p/f4.txt" in msg
+    assert "more" not in msg
+
+
+def test_new_files_absolute_no_paths_available():
+    # Violation still reported even if path list is missing/empty.
+    diff = {"new_files": 150, "added_bytes": 0, "new_file_paths": []}
+    warnings = check_new_files_absolute(_cfg(max_new_files=100), diff)
+    assert len(warnings) == 1
+    assert "more" not in warnings[0]
+
+
 # ── check_added_size ──────────────────────────────────────────────────────────
 
 def test_added_size_no_violation():
@@ -382,15 +412,16 @@ def test_build_details_lists_violations():
     assert "NEW_FILES" in details
 
 
-def test_build_details_lists_new_files():
+def test_build_details_omits_new_files_section():
+    # New files are listed inline in the NEW_FILES violation, not duplicated here.
     diff = {"new_file_paths": [f"/project/file{i}.py" for i in range(60)],
-            "modified_file_paths": []}
+            "modified_file_paths": [f"/src/mod{i}.py" for i in range(3)]}
     details = build_details("default", _SNAP, _PREV, [], diff)
-    assert "New files (60)" in details
-    assert "/project/file0.py" in details
-    assert "/project/file49.py" in details
-    assert "/project/file50.py" not in details
-    assert "and 10 more" in details
+    assert "New files (" not in details
+    assert "/project/file0.py" not in details
+    # Modified files are still listed.
+    assert "Modified files (3)" in details
+    assert "/src/mod0.py" in details
 
 
 def test_build_details_caps_modified_files():

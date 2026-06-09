@@ -35,6 +35,9 @@ from datetime import datetime
 _PROFILE_NAME: str = ""
 _RESTICPROFILE_CONFIG: str = ""
 
+# How many new file paths to list inline in the NEW_FILES violation message.
+NEW_FILES_LISTED = 20
+
 
 # ── Size parsing ──────────────────────────────────────────────────────────────
 
@@ -182,9 +185,11 @@ def get_diff(snap1_id: str, snap2_id: str) -> dict:
                     result["removed_bytes"] = _parse_size_to_bytes(m.group(1).strip())
                 except ValueError:
                     pass
-        elif len(line) >= 2 and line[0] == " " and line[1] in ("+", "-", "M"):
-            indicator = line[1]
-            path = line[2:].strip()
+        elif len(line) >= 2 and line[0] in ("+", "-", "M") and line[1] == " ":
+            # restic diff lists changes as "<indicator>    <path>" (indicator
+            # left-justified in 5 columns, so the path starts at column 0+pad).
+            indicator = line[0]
+            path = line[1:].strip()
             if path:
                 if indicator == "+":
                     result["new_file_paths"].append(path)
@@ -259,14 +264,24 @@ def check_new_extensions(config: dict, curr_exts: dict, prev_exts: dict) -> list
 
 
 def check_new_files_absolute(config: dict, diff_stats: dict) -> list:
-    """Warn if too many new files were added in this backup run."""
+    """Warn if too many new files were added in this backup run.
+
+    Lists the first NEW_FILES_LISTED new file paths inline so the notification
+    shows which files triggered the violation.
+    """
     warnings = []
     new_count = diff_stats.get("new_files", 0)
     if new_count > config["max_new_files"]:
-        warnings.append(
+        msg = (
             f"NEW_FILES: {new_count:,} new files added, "
             f"threshold is {config['max_new_files']:,}"
         )
+        new_paths = diff_stats.get("new_file_paths", [])
+        for p in new_paths[:NEW_FILES_LISTED]:
+            msg += f"\n  + {p}"
+        if len(new_paths) > NEW_FILES_LISTED:
+            msg += f"\n  ... and {len(new_paths) - NEW_FILES_LISTED} more"
+        warnings.append(msg)
     return warnings
 
 
@@ -406,16 +421,9 @@ def build_details(
         lines.append("")
 
     if diff_stats:
-        new_paths = diff_stats.get("new_file_paths", [])
+        # New files are listed inline in the NEW_FILES violation (when it fires),
+        # so only the modified-files listing is added here to avoid duplication.
         mod_paths = diff_stats.get("modified_file_paths", [])
-
-        if new_paths:
-            lines.append(f"New files ({len(new_paths)}):")
-            for p in new_paths[:50]:
-                lines.append(f"  + {p}")
-            if len(new_paths) > 50:
-                lines.append(f"  ... and {len(new_paths) - 50} more")
-            lines.append("")
 
         if mod_paths:
             lines.append(f"Modified files ({len(mod_paths)}):")
