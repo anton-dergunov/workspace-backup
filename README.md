@@ -107,43 +107,28 @@ Notifications use command templates with `{placeholder}` substitution. Any tool 
 # macOS desktop notification via apprise
 --notify-short "apprise -t '{title}' -b '{message}' macosx://"
 
-# Email via apprise
+# Plain-text email via apprise
 --notify-long "apprise -t '{title}' -b '{details}' 'mailto://user:pass@smtp.example.com'"
+
+# Styled HTML email via apprise (note -i html and {details_html})
+--notify-long "apprise -i html -t '{title}' -b '{details_html}' 'mailto://user:pass@smtp.example.com'"
 
 # macOS desktop notification via terminal-notifier
 --notify-short "terminal-notifier -title '{title}' -message '{message}'"
 ```
 
-Available placeholders: `{title}`, `{message}` (compact summary), `{details}` (full report with file listings), `{profile}`, `{status}`, `{violations}`.
+Available placeholders: `{title}`, `{message}` (compact summary), `{details}` (full plain-text report with file listings and next-step commands), `{details_html}` (the same report as a styled HTML document, for HTML-capable email), `{profile}`, `{status}`, `{violations}`.
 
 Both `--notify-short` and `--notify-long` are repeatable. **Notifications only fire on violations.** The log file (`--log`) is written on every run.
 
-**If guardrails flag a path that shouldn't have been backed up:**
+**When a violation fires:** the notification (and log) include the exact
+resticprofile commands to investigate *what* changed and to remediate it —
+remove unwanted files from the latest snapshot or all history, restore
+accidentally-removed files, prune, and update your exclude file — each pre-filled
+with that run's snapshot IDs and an example path.
 
-1. Add an exclude pattern to prevent it from being included in future backups.
-2. Remove it from existing snapshots with `restic rewrite` (requires restic ≥ 0.16):
-
-```bash
-# Remove from latest snapshot only
-resticprofile rewrite --exclude /path/to/dir latest
-
-# Remove from all snapshots
-resticprofile rewrite --exclude /path/to/dir --all
-```
-
-Then clean up orphaned data:
-
-```bash
-resticprofile prune
-```
-
-If `prune` fails with a stale lock error, unlock first:
-
-```bash
-resticprofile unlock && resticprofile prune
-```
-
-Run `resticprofile check` afterward to verify repository integrity.
+See **[GUARDRAILS-RUNBOOK.md](GUARDRAILS-RUNBOOK.md)** for the same guidance in
+generic form (investigate / remediate / recover / housekeeping).
 
 Install [apprise](https://github.com/caronc/apprise) for multi-platform notifications (macOS, email, Slack, etc.):
 

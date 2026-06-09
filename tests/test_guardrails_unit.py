@@ -10,9 +10,12 @@ from unittest.mock import call, patch
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
+import guardrails
 from guardrails import (
     _parse_size_to_bytes,
+    build_action_guide,
     build_details,
+    build_details_html,
     build_short_message,
     check_added_size,
     check_file_count_growth,
@@ -22,6 +25,9 @@ from guardrails import (
     check_removed_size,
     check_size_growth,
     check_total_size,
+    format_rp_command,
+    get_diff,
+    render_guide_text,
     run_notify_commands,
     write_log,
 )
@@ -536,3 +542,197 @@ def test_write_log_bad_path_silent(capsys):
     write_log("/nonexistent/dir/guardrails.log", "content")  # must not raise
     captured = capsys.readouterr()
     assert "Warning" in captured.err or captured.err == ""
+
+
+# ── get_diff parsing ──────────────────────────────────────────────────────────
+
+_DIFF_OUTPUT = """\
+comparing snapshot c17dff7e to a301fbe1:
+
++    /data/new1.txt
++    /data/new2.txt
+-    /data/gone.txt
+M    /data/changed.txt
+
+Files:           2 new,     1 removed,     1 changed
+Data Blobs:      3 new,     1 removed
+  Added:   1.464 KiB
+  Removed: 758 B
+"""
+
+
+def test_get_diff_captures_all_change_kinds():
+    with patch("guardrails.run_resticprofile", return_value=_DIFF_OUTPUT):
+        d = get_diff("c17dff7e", "a301fbe1")
+    assert d["new_file_paths"] == ["/data/new1.txt", "/data/new2.txt"]
+    assert d["removed_file_paths"] == ["/data/gone.txt"]
+    assert d["modified_file_paths"] == ["/data/changed.txt"]
+    assert d["new_files"] == 2
+    assert d["removed_files"] == 1
+
+
+# ── generalized inline file listings ──────────────────────────────────────────
+
+def test_size_growth_lists_added_and_modified_files():
+    curr = {"total_size": 2000}
+    prev = {"total_size": 1000}  # 2x growth
+    diff = {"new_file_paths": ["/a/new.bin"], "modified_file_paths": ["/a/mod.py"]}
+    warnings = check_size_growth(_cfg(), curr, prev, diff)
+    assert len(warnings) == 1
+    assert "+ /a/new.bin" in warnings[0]
+    assert "M /a/mod.py" in warnings[0]
+
+
+def test_size_growth_no_diff_headline_only():
+    curr = {"total_size": 2000}
+    prev = {"total_size": 1000}
+    warnings = check_size_growth(_cfg(), curr, prev)  # diff_stats omitted
+    assert len(warnings) == 1
+    assert "\n" not in warnings[0]
+
+
+def test_added_size_lists_files():
+    diff = {"new_files": 0, "added_bytes": 20 * 1024**2, "removed_bytes": 0,
+            "data_blobs_new": 5, "new_file_paths": ["/a/big.bin"],
+            "modified_file_paths": []}
+    warnings = check_added_size(_cfg(max_added_size=10 * 1024**2), diff)
+    assert "+ /a/big.bin" in warnings[0]
+
+
+def test_total_size_lists_files():
+    diff = {"new_file_paths": ["/a/big.bin"], "modified_file_paths": []}
+    warnings = check_total_size(_cfg(max_total_size=1000), {"total_size": 5000}, diff)
+    assert "+ /a/big.bin" in warnings[0]
+
+
+def test_removed_files_lists_removed_paths():
+    diff = {"removed_files": 150, "new_files": 0,
+            "removed_file_paths": [f"/gone/f{i}" for i in range(150)]}
+    warnings = check_removed_files(_cfg(max_removed_files=100), diff)
+    assert "- /gone/f0" in warnings[0]
+    assert "and 130 more" in warnings[0]
+
+
+def test_removed_size_lists_removed_paths():
+    diff = {"new_files": 0, "added_bytes": 0, "removed_bytes": 80 * 1024**2,
+            "removed_file_paths": ["/gone/big.bin"]}
+    warnings = check_removed_size(_cfg(max_removed_size=10 * 1024**2), diff)
+    assert "- /gone/big.bin" in warnings[0]
+
+
+# ── format_rp_command ─────────────────────────────────────────────────────────
+
+def test_format_rp_command_includes_profile():
+    with patch.object(guardrails, "_PROFILE_NAME", "myprofile"), \
+         patch.object(guardrails, "_RESTICPROFILE_CONFIG", ""):
+        cmd = format_rp_command(["diff", "a", "b"])
+    assert cmd == "resticprofile --name myprofile diff a b"
+
+
+def test_format_rp_command_includes_config_when_set():
+    with patch.object(guardrails, "_PROFILE_NAME", "default"), \
+         patch.object(guardrails, "_RESTICPROFILE_CONFIG", "/etc/profiles.yaml"):
+        cmd = format_rp_command(["stats", "abc"])
+    assert "--config /etc/profiles.yaml" in cmd
+    assert "--name default" in cmd
+
+
+def test_format_rp_command_quotes_spaces():
+    with patch.object(guardrails, "_PROFILE_NAME", "default"), \
+         patch.object(guardrails, "_RESTICPROFILE_CONFIG", ""):
+        cmd = format_rp_command(["rewrite", "--exclude", "/a b/c.txt"])
+    assert "'/a b/c.txt'" in cmd
+
+
+# ── build_action_guide ────────────────────────────────────────────────────────
+
+def _guide_text(warnings, diff, current="a301fbe1", prev="c17dff7e"):
+    with patch.object(guardrails, "_PROFILE_NAME", "default"), \
+         patch.object(guardrails, "_RESTICPROFILE_CONFIG", ""):
+        guide = build_action_guide(current, prev, warnings, diff)
+        return render_guide_text(guide), guide
+
+
+def test_action_guide_empty_without_warnings():
+    assert build_action_guide("a301fbe1", "c17dff7e", [], {}) == []
+
+
+def test_action_guide_always_has_inspect_diff():
+    text, _ = _guide_text(["NEW_FILES: 138 new files added, threshold is 100"],
+                          {"new_file_paths": ["/a/x.parquet"]})
+    assert "diff c17dff7e a301fbe1" in text
+
+
+def test_action_guide_new_files_has_rewrite_with_example_path():
+    text, _ = _guide_text(["NEW_FILES: 138 new files added, threshold is 100"],
+                          {"new_file_paths": ["/ml/data/batch.parquet"]})
+    assert "rewrite --forget --exclude /ml/data/batch.parquet a301fbe1" in text
+    assert "rewrite --forget --exclude /ml/data/batch.parquet" in text  # all-history
+    assert "prune" in text
+    assert "config/excludes.txt" in text
+
+
+def test_action_guide_removed_files_offers_restore_not_rewrite():
+    text, _ = _guide_text(["REMOVED_FILES: 150 files net removed in this run"],
+                          {"removed_file_paths": ["/ml/keep.txt"]})
+    assert "restore c17dff7e --include /ml/keep.txt" in text
+    # No "remove unwanted data" remediation for a deletion-type violation.
+    assert "Remediate — remove unwanted data" not in text
+
+
+def test_action_guide_size_growth_has_raw_data_stats():
+    text, _ = _guide_text(["SIZE_GROWTH: snapshot grew 2.00x"],
+                          {"new_file_paths": [], "modified_file_paths": []})
+    assert "stats a301fbe1 --mode raw-data" in text
+
+
+def test_action_guide_uses_placeholder_when_no_paths():
+    text, _ = _guide_text(["NEW_FILES: 138 new files added, threshold is 100"], {})
+    assert "<PATH>" in text
+
+
+# ── build_details with action guide ───────────────────────────────────────────
+
+def test_build_details_includes_next_steps_on_violation():
+    with patch.object(guardrails, "_PROFILE_NAME", "default"), \
+         patch.object(guardrails, "_RESTICPROFILE_CONFIG", ""):
+        details = build_details(
+            "default", _SNAP, _PREV,
+            ["NEW_FILES: 138 new files added, threshold is 100"],
+            {"new_file_paths": ["/a/x.parquet"], "modified_file_paths": []},
+        )
+    assert "WHAT TO DO NEXT" in details
+    assert "Remediate" in details
+    assert "diff def456ab abc123ef" in details
+
+
+def test_build_details_no_next_steps_when_clean():
+    details = build_details("default", _SNAP, _PREV, [], None)
+    assert "WHAT TO DO NEXT" not in details
+
+
+# ── build_details_html ────────────────────────────────────────────────────────
+
+def test_build_details_html_structure_and_escaping():
+    with patch.object(guardrails, "_PROFILE_NAME", "default"), \
+         patch.object(guardrails, "_RESTICPROFILE_CONFIG", ""):
+        html = build_details_html(
+            "default", _SNAP, _PREV,
+            ["NEW_FILES: 1 new file added, threshold is 0\n  + /a/<b>&.txt"],
+            {"new_file_paths": ["/a/<b>&.txt"], "modified_file_paths": []},
+        )
+    assert html.startswith("<!DOCTYPE html>")
+    assert "badge warn" in html
+    assert "NEW_FILES" in html
+    assert "<pre><code>" in html
+    # raw angle brackets / ampersand are escaped
+    assert "<b>" not in html.replace("<body>", "")  # the path's <b> is escaped
+    assert "&lt;b&gt;" in html
+    assert "&amp;" in html
+
+
+def test_build_details_html_ok_state():
+    html = build_details_html("default", _SNAP, _PREV, [], None)
+    assert "badge ok" in html
+    assert "All guardrails passed" in html
+    assert "<pre>" not in html  # no command blocks when clean

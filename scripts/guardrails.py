@@ -14,22 +14,25 @@ Usage in profiles.yaml run-after:
     --notify-long  "apprise -t '{title}' -b '{details}' mailto://..."
 
 Template placeholders for --notify-short / --notify-long:
-  {title}      — one-line notification title
-  {message}    — compact multi-line summary (suitable for desktop)
-  {details}    — full report with file listings (suitable for email)
-  {profile}    — resticprofile profile name
-  {status}     — "WARNING" or "OK"
-  {violations} — number of violations as a string
+  {title}        — one-line notification title
+  {message}      — compact multi-line summary (suitable for desktop)
+  {details}      — full plain-text report with file listings and next-step commands
+  {details_html} — same report as a styled HTML document (use with apprise -i html)
+  {profile}      — resticprofile profile name
+  {status}       — "WARNING" or "OK"
+  {violations}   — number of violations as a string
 """
 
 import argparse
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from collections import defaultdict
 from datetime import datetime
+from html import escape as _esc
 
 # Set at startup from CLI args / env
 _PROFILE_NAME: str = ""
@@ -156,6 +159,7 @@ def get_diff(snap1_id: str, snap2_id: str) -> dict:
         "removed_bytes": 0,
         "data_blobs_new": 0,
         "new_file_paths": [],
+        "removed_file_paths": [],
         "modified_file_paths": [],
     }
     for line in output.splitlines():
@@ -193,6 +197,8 @@ def get_diff(snap1_id: str, snap2_id: str) -> dict:
             if path:
                 if indicator == "+":
                     result["new_file_paths"].append(path)
+                elif indicator == "-":
+                    result["removed_file_paths"].append(path)
                 elif indicator == "M":
                     result["modified_file_paths"].append(path)
     return result
@@ -210,9 +216,46 @@ def extract_extensions(files: list) -> dict:
     return dict(extensions)
 
 
+# ── Shared formatting helpers ─────────────────────────────────────────────────
+
+def format_rp_command(args: list) -> str:
+    """Format a copy-pasteable resticprofile command line for notifications.
+
+    Mirrors run_resticprofile()'s prefix so the commands shown to the user match
+    how the script itself talks to the repository.
+    """
+    parts = ["resticprofile"]
+    if _RESTICPROFILE_CONFIG:
+        parts += ["--config", _RESTICPROFILE_CONFIG]
+    parts += ["--name", _PROFILE_NAME or "<profile>"]
+    parts += args
+    return " ".join(shlex.quote(p) for p in parts)
+
+
+def _file_listing(entries: list, limit: int = NEW_FILES_LISTED) -> str:
+    """Render up to `limit` change entries as indented lines.
+
+    entries: ordered list of (marker, path), marker in {"+", "-", "M"}.
+    Returns "" when there is nothing to list.
+    """
+    lines = []
+    for marker, path in entries[:limit]:
+        lines.append(f"  {marker} {path}")
+    if len(entries) > limit:
+        lines.append(f"  ... and {len(entries) - limit:,} more")
+    return "\n".join(lines)
+
+
+def _append_listing(message: str, entries: list, limit: int = NEW_FILES_LISTED) -> str:
+    """Append a file listing to a violation message, if there is anything to show."""
+    listing = _file_listing(entries, limit)
+    return f"{message}\n{listing}" if listing else message
+
+
 # ── Guardrail checks ──────────────────────────────────────────────────────────
 
-def check_size_growth(config: dict, curr_stats: dict, prev_stats: dict) -> list:
+def check_size_growth(config: dict, curr_stats: dict, prev_stats: dict,
+                      diff_stats: dict | None = None) -> list:
     """Warn if snapshot grew more than max_growth_ratio vs previous."""
     warnings = []
     if not prev_stats or "total_size" not in prev_stats:
@@ -222,15 +265,17 @@ def check_size_growth(config: dict, curr_stats: dict, prev_stats: dict) -> list:
     if prev_size > 0:
         ratio = curr_size / prev_size
         if ratio > config["max_growth_ratio"]:
-            warnings.append(
+            msg = (
                 f"SIZE_GROWTH: snapshot grew {ratio:.2f}x "
                 f"({prev_size / (1<<30):.2f} GB → {curr_size / (1<<30):.2f} GB), "
                 f"threshold is {config['max_growth_ratio']:.2f}x"
             )
+            warnings.append(_append_listing(msg, _added_entries(diff_stats or {})))
     return warnings
 
 
-def check_file_count_growth(config: dict, curr_files: list, prev_files: list) -> list:
+def check_file_count_growth(config: dict, curr_files: list, prev_files: list,
+                            diff_stats: dict | None = None) -> list:
     """Warn if file count grew more than max_file_count_growth_ratio vs previous."""
     warnings = []
     prev_count = len(prev_files) if prev_files else 0
@@ -238,11 +283,13 @@ def check_file_count_growth(config: dict, curr_files: list, prev_files: list) ->
     if prev_count > 0:
         ratio = curr_count / prev_count
         if ratio > config["max_file_count_growth_ratio"]:
-            warnings.append(
+            msg = (
                 f"FILE_COUNT_GROWTH: count jumped {ratio:.2f}x "
                 f"({prev_count:,} → {curr_count:,}), "
                 f"threshold is {config['max_file_count_growth_ratio']:.2f}x"
             )
+            entries = [("+", p) for p in (diff_stats or {}).get("new_file_paths", [])]
+            warnings.append(_append_listing(msg, entries))
     return warnings
 
 
@@ -263,6 +310,19 @@ def check_new_extensions(config: dict, curr_exts: dict, prev_exts: dict) -> list
     return warnings
 
 
+def _added_entries(diff_stats: dict) -> list:
+    """(marker, path) entries for files added/modified in this run."""
+    return (
+        [("+", p) for p in diff_stats.get("new_file_paths", [])]
+        + [("M", p) for p in diff_stats.get("modified_file_paths", [])]
+    )
+
+
+def _removed_entries(diff_stats: dict) -> list:
+    """(marker, path) entries for files removed in this run."""
+    return [("-", p) for p in diff_stats.get("removed_file_paths", [])]
+
+
 def check_new_files_absolute(config: dict, diff_stats: dict) -> list:
     """Warn if too many new files were added in this backup run.
 
@@ -276,12 +336,8 @@ def check_new_files_absolute(config: dict, diff_stats: dict) -> list:
             f"NEW_FILES: {new_count:,} new files added, "
             f"threshold is {config['max_new_files']:,}"
         )
-        new_paths = diff_stats.get("new_file_paths", [])
-        for p in new_paths[:NEW_FILES_LISTED]:
-            msg += f"\n  + {p}"
-        if len(new_paths) > NEW_FILES_LISTED:
-            msg += f"\n  ... and {len(new_paths) - NEW_FILES_LISTED} more"
-        warnings.append(msg)
+        entries = [("+", p) for p in diff_stats.get("new_file_paths", [])]
+        warnings.append(_append_listing(msg, entries))
     return warnings
 
 
@@ -295,12 +351,13 @@ def check_added_size(config: dict, diff_stats: dict) -> list:
     net_bytes = max(0, diff_stats.get("added_bytes", 0) - diff_stats.get("removed_bytes", 0))
     max_bytes = config["max_added_size"]
     if net_bytes > max_bytes:
-        warnings.append(
+        msg = (
             f"ADDED_SIZE: {net_bytes / (1<<20):.1f} MiB net new data in this run "
             f"(added {diff_stats['added_bytes'] / (1<<20):.1f} MiB, "
             f"removed {diff_stats['removed_bytes'] / (1<<20):.1f} MiB), "
             f"threshold is {max_bytes / (1<<20):.1f} MiB"
         )
+        warnings.append(_append_listing(msg, _added_entries(diff_stats)))
     return warnings
 
 
@@ -314,12 +371,13 @@ def check_removed_size(config: dict, diff_stats: dict) -> list:
     net_removed = max(0, diff_stats.get("removed_bytes", 0) - diff_stats.get("added_bytes", 0))
     max_bytes = config["max_removed_size"]
     if net_removed > max_bytes:
-        warnings.append(
+        msg = (
             f"REMOVED_SIZE: {net_removed / (1<<20):.1f} MiB net data removed in this run "
             f"(added {diff_stats['added_bytes'] / (1<<20):.1f} MiB, "
             f"removed {diff_stats['removed_bytes'] / (1<<20):.1f} MiB), "
             f"threshold is {max_bytes / (1<<20):.1f} MiB"
         )
+        warnings.append(_append_listing(msg, _removed_entries(diff_stats)))
     return warnings
 
 
@@ -332,23 +390,26 @@ def check_removed_files(config: dict, diff_stats: dict) -> list:
     warnings = []
     net_removed = max(0, diff_stats.get("removed_files", 0) - diff_stats.get("new_files", 0))
     if net_removed > config["max_removed_files"]:
-        warnings.append(
+        msg = (
             f"REMOVED_FILES: {net_removed:,} files net removed in this run "
             f"(threshold is {config['max_removed_files']:,})"
         )
+        warnings.append(_append_listing(msg, _removed_entries(diff_stats)))
     return warnings
 
 
-def check_total_size(config: dict, curr_stats: dict) -> list:
+def check_total_size(config: dict, curr_stats: dict,
+                     diff_stats: dict | None = None) -> list:
     """Warn if total snapshot size exceeds absolute limit."""
     warnings = []
     total = curr_stats.get("total_size", 0)
     max_bytes = config["max_total_size"]
     if total > max_bytes:
-        warnings.append(
+        msg = (
             f"TOTAL_SIZE: snapshot is {total / (1<<30):.2f} GB, "
             f"threshold is {max_bytes / (1<<30):.2f} GB"
         )
+        warnings.append(_append_listing(msg, _added_entries(diff_stats or {})))
     return warnings
 
 
@@ -379,6 +440,148 @@ def build_short_message(
         lines.append(f"New files: {', '.join(names)}{suffix}")
 
     return "\n".join(lines)
+
+
+def build_action_guide(
+    current_id: str,
+    prev_id: str | None,
+    warnings: list,
+    diff_stats: dict | None,
+) -> list:
+    """
+    Build investigate/remediate sections tailored to which violations fired.
+
+    Each section is a dict:
+      {"title": str, "note": str | None,
+       "steps": [(comment: str, [command: str, ...]), ...]}
+
+    Commands are concrete resticprofile invocations using the real snapshot IDs
+    and an example path from the diff (when available), so the user can copy,
+    adjust the path/pattern, and run them.
+    """
+    if not warnings or not current_id:
+        return []
+
+    codes = {w.split(":", 1)[0].strip() for w in warnings}
+    diff_stats = diff_stats or {}
+
+    def example(paths_key: str, fallback: str = "<PATH>") -> str:
+        paths = diff_stats.get(paths_key, [])
+        return paths[0] if paths else fallback
+
+    sections: list = []
+
+    # ── Always: inspect what changed ──
+    inspect_steps = []
+    if prev_id:
+        inspect_steps.append(
+            ("See everything that changed between the two snapshots",
+             [format_rp_command(["diff", prev_id, current_id])]))
+    inspect_steps.append(
+        ("List files in the new snapshot with sizes (spot the large/unexpected ones)",
+         [format_rp_command(["ls", "-l", current_id])]))
+    inspect_steps.append(
+        ("Snapshot statistics",
+         [format_rp_command(["stats", current_id])]))
+    sections.append({"title": "Investigate — what changed",
+                     "note": None, "steps": inspect_steps})
+
+    added_like = codes & {"NEW_FILES", "FILE_COUNT_GROWTH", "ADDED_SIZE",
+                          "NEW_EXTENSIONS", "SIZE_GROWTH", "TOTAL_SIZE"}
+    size_like = codes & {"SIZE_GROWTH", "TOTAL_SIZE", "ADDED_SIZE"}
+    removed_like = codes & {"REMOVED_FILES", "REMOVED_SIZE"}
+
+    if size_like:
+        cmds = [format_rp_command(["stats", current_id, "--mode", "raw-data"])]
+        if prev_id:
+            cmds.append(format_rp_command(["stats", prev_id, "--mode", "raw-data"]))
+        sections.append({
+            "title": "Investigate — size",
+            "note": None,
+            "steps": [("Compare raw (deduplicated) data size of each snapshot", cmds)],
+        })
+
+    if "NEW_EXTENSIONS" in codes:
+        sections.append({
+            "title": "Investigate — new file types",
+            "note": "Replace <EXT> with the flagged extension, e.g. parquet.",
+            "steps": [("Find every file of a given type across all snapshots",
+                       [format_rp_command(["find", "*.<EXT>"])])],
+        })
+
+    if added_like:
+        path = example("new_file_paths")
+        steps = [
+            ("Preview removing an unwanted path from the latest snapshot (no changes made)",
+             [format_rp_command(["rewrite", "--dry-run", "--exclude", path, current_id])]),
+            ("Remove it from the latest snapshot",
+             [format_rp_command(["rewrite", "--forget", "--exclude", path, current_id])]),
+            ("Remove it from ALL snapshots in history",
+             [format_rp_command(["rewrite", "--forget", "--exclude", path])]),
+            ("Reclaim disk space afterwards",
+             [format_rp_command(["prune"])]),
+            ("Stop it being backed up again: add a pattern to config/excludes.txt "
+             "(e.g. '*.parquet' or a directory path)", []),
+        ]
+        if codes & {"SIZE_GROWTH", "TOTAL_SIZE"}:
+            steps.append(
+                ("Or drop old snapshots per your retention policy, then prune",
+                 [format_rp_command(["forget", "--prune"])]))
+        sections.append({
+            "title": "Remediate — remove unwanted data",
+            "note": ("These rewrite snapshot history — review carefully. --exclude "
+                     "takes restic patterns (e.g. '*.parquet', '/dir/**'); the example "
+                     "path below is just the first flagged file."),
+            "steps": steps,
+        })
+
+    if removed_like:
+        path = example("removed_file_paths")
+        steps = []
+        if prev_id:
+            steps.append(
+                ("Restore an accidentally removed file from the previous snapshot",
+                 [format_rp_command(["restore", prev_id, "--include", path,
+                                     "--target", "<RESTORE_DIR>"])]))
+        steps.append(("If the deletion was intentional, no action is needed.", []))
+        sections.append({
+            "title": "Remediate — recover removed data",
+            "note": None,
+            "steps": steps,
+        })
+
+    sections.append({
+        "title": "If resticprofile intercepts a flag",
+        "note": "Run restic directly after exporting the repository credentials.",
+        "steps": [("Example", [
+            "export RESTIC_REPOSITORY=... RESTIC_PASSWORD=...",
+            f"restic rewrite --forget --exclude '<PATH>' {current_id}",
+        ])],
+    })
+
+    return sections
+
+
+def _rule(title: str, width: int = 70) -> str:
+    """A section rule like '── Title ─────…'."""
+    return f"── {title} ".ljust(width, "─")
+
+
+def render_guide_text(guide: list) -> str:
+    """Render an action guide (from build_action_guide) as plain text."""
+    if not guide:
+        return ""
+    out: list = []
+    for section in guide:
+        out.append(_rule(section["title"]))
+        if section.get("note"):
+            out.append(section["note"])
+        out.append("")
+        for comment, cmds in section["steps"]:
+            out.append(f"# {comment}")
+            out.extend(cmds)
+            out.append("")
+    return "\n".join(out).rstrip()
 
 
 def build_details(
@@ -433,7 +636,151 @@ def build_details(
                 lines.append(f"  ... and {len(mod_paths) - 20} more")
             lines.append("")
 
+    if all_warnings:
+        guide = build_action_guide(
+            current_snapshot["id"][:8],
+            prev_snapshot["id"][:8] if prev_snapshot else None,
+            all_warnings,
+            diff_stats,
+        )
+        guide_text = render_guide_text(guide)
+        if guide_text:
+            lines.append("WHAT TO DO NEXT")
+            lines.append("")
+            lines.append(guide_text)
+            lines.append("")
+
     return "\n".join(lines)
+
+
+# ── HTML notification (for email clients that render it) ──────────────────────
+
+_EMAIL_CSS = """
+body{font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  color:#24292f;background:#f6f8fa;margin:0;padding:24px;line-height:1.5}
+.wrap{max-width:760px;margin:0 auto;background:#fff;border:1px solid #d0d7de;
+  border-radius:8px;overflow:hidden}
+.head{padding:18px 24px;border-bottom:1px solid #d0d7de}
+.head h1{font-size:18px;margin:0 0 6px}
+.sub{font-size:13px;color:#57606a}
+.badge{display:inline-block;font-size:12px;font-weight:700;padding:2px 10px;
+  border-radius:999px;color:#fff;vertical-align:middle}
+.badge.warn{background:#cf222e}.badge.ok{background:#1a7f37}
+.sec{padding:16px 24px;border-bottom:1px solid #eaeef2}
+.sec h2{font-size:13px;text-transform:uppercase;letter-spacing:.04em;
+  color:#57606a;margin:0 0 10px}
+table.meta{border-collapse:collapse;font-size:13px}
+table.meta td{padding:2px 12px 2px 0;vertical-align:top}
+table.meta td.k{color:#57606a;white-space:nowrap}
+.viol{border-left:4px solid #cf222e;background:#fff8f8;padding:10px 14px;
+  border-radius:4px;margin-bottom:12px}
+.viol .code{font-weight:700;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.viol .msg{color:#57606a;font-size:13px;margin-top:2px}
+ul.files{margin:8px 0 0;padding:0;list-style:none;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:#444}
+.step{margin:0 0 12px}
+.step .cmt{font-size:13px;color:#57606a;margin-bottom:4px}
+pre{margin:0;background:#0d1117;color:#e6edf3;border-radius:6px;padding:10px 12px;
+  overflow-x:auto;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+.remediate{border-left:4px solid #d4a72c;background:#fffbef;padding:12px 16px;
+  border-radius:4px}
+.note{font-size:12px;color:#9a6700;margin-bottom:10px}
+.ok-msg{color:#1a7f37;font-weight:600;margin:0}
+.foot{padding:12px 24px;font-size:11px;color:#8c959f}
+"""
+
+
+def _split_warning(warning: str) -> tuple:
+    """Split a violation string into (headline, [listing line, ...])."""
+    parts = warning.split("\n")
+    return parts[0], [p for p in parts[1:] if p.strip()]
+
+
+def build_details_html(
+    profile: str,
+    current_snapshot: dict,
+    prev_snapshot: dict | None,
+    all_warnings: list,
+    diff_stats: dict | None,
+) -> str:
+    """Render the full report as a self-contained HTML document for email."""
+    status_ok = not all_warnings
+    n = len(all_warnings)
+    badge = ('<span class="badge ok">OK</span>' if status_ok
+             else '<span class="badge warn">WARNING</span>')
+    subtitle = ("All guardrails passed" if status_ok
+                else f"{n} violation{'s' if n != 1 else ''} detected")
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    h: list = [
+        "<!DOCTYPE html>",
+        '<html lang="en"><head><meta charset="utf-8">',
+        '<meta name="viewport" content="width=device-width, initial-scale=1">',
+        f"<style>{_EMAIL_CSS}</style></head><body>",
+        '<div class="wrap">',
+        '<div class="head">',
+        f"<h1>Backup Guardrail Report {badge}</h1>",
+        f'<div class="sub">{_esc(profile)} — {_esc(subtitle)}</div>',
+        "</div>",
+    ]
+
+    def row(k: str, v: str) -> str:
+        return f'<tr><td class="k">{_esc(k)}</td><td>{_esc(v)}</td></tr>'
+
+    h.append('<div class="sec"><h2>Snapshot</h2><table class="meta">')
+    h.append(row("Profile", profile))
+    h.append(row("Time", ts))
+    h.append(row("Current", f"{current_snapshot['id'][:8]}  ({current_snapshot['time']})"))
+    if prev_snapshot:
+        h.append(row("Previous", f"{prev_snapshot['id'][:8]}  ({prev_snapshot['time']})"))
+    else:
+        h.append(row("Previous", "(none — first backup)"))
+    h.append("</table></div>")
+
+    if all_warnings:
+        h.append(f'<div class="sec"><h2>Violations ({n})</h2>')
+        for w in all_warnings:
+            headline, listing = _split_warning(w)
+            code, _, rest = headline.partition(":")
+            h.append('<div class="viol">')
+            h.append(f'<div class="code">{_esc(code.strip())}</div>')
+            if rest.strip():
+                h.append(f'<div class="msg">{_esc(rest.strip())}</div>')
+            if listing:
+                h.append('<ul class="files">')
+                for line in listing:
+                    h.append(f"<li>{_esc(line.strip())}</li>")
+                h.append("</ul>")
+            h.append("</div>")
+        h.append("</div>")
+    else:
+        h.append('<div class="sec"><p class="ok-msg">✓ All guardrails passed.</p></div>')
+
+    if all_warnings:
+        guide = build_action_guide(
+            current_snapshot["id"][:8],
+            prev_snapshot["id"][:8] if prev_snapshot else None,
+            all_warnings,
+            diff_stats,
+        )
+        for section in guide:
+            remediate = section["title"].lower().startswith("remediate")
+            h.append('<div class="sec">')
+            h.append(f'<h2>{_esc(section["title"])}</h2>')
+            h.append('<div class="remediate">' if remediate else "<div>")
+            if section.get("note"):
+                h.append(f'<div class="note">{_esc(section["note"])}</div>')
+            for comment, cmds in section["steps"]:
+                h.append('<div class="step">')
+                h.append(f'<div class="cmt">{_esc(comment)}</div>')
+                if cmds:
+                    h.append(f"<pre><code>{_esc(chr(10).join(cmds))}</code></pre>")
+                h.append("</div>")
+            h.append("</div></div>")
+
+    h.append(f'<div class="foot">Generated by guardrails.py at {ts}</div>')
+    h.append("</div></body></html>")
+    return "\n".join(h)
 
 
 # ── Notification dispatch ─────────────────────────────────────────────────────
@@ -549,8 +896,9 @@ def parse_args() -> argparse.Namespace:
         dest="notify_long",
         help=(
             "Command template for detailed (email) notifications on violation. "
-            "Repeatable. Placeholders: {title} {details} {profile} {status} {violations}. "
-            "Example: \"apprise -t '{title}' -b '{details}' 'mailto://user:pass@gmail.com'\""
+            "Repeatable. Placeholders: {title} {details} {details_html} {profile} "
+            "{status} {violations}. Use {details_html} with an HTML-capable sender, "
+            "e.g. \"apprise -i html -t '{title}' -b '{details_html}' 'mailto://user:pass@gmail.com'\""
         ),
     )
     parser.add_argument(
@@ -630,11 +978,7 @@ def main():
         print(f"  Previous: {prev_stats.get('total_size', 0) / (1<<30):.3f} GB  "
               f"({prev_stats.get('total_file_count', 0):,} files)")
 
-    all_warnings.extend(check_size_growth(config, curr_stats, prev_stats))
-    all_warnings.extend(check_file_count_growth(config, curr_files, prev_files))
-    all_warnings.extend(check_new_extensions(config, curr_exts, prev_exts))
-    all_warnings.extend(check_total_size(config, curr_stats))
-
+    # Compute the diff up front so every check can report the files involved.
     if prev_snapshot:
         diff_stats = get_diff(prev_snapshot["id"], current_snapshot["id"])
         net_mib = (diff_stats["added_bytes"] - diff_stats["removed_bytes"]) / (1 << 20)
@@ -644,6 +988,13 @@ def main():
               f"{diff_stats['removed_bytes'] / (1<<20):.2f} MiB removed "
               f"(net {net_mib:+.2f} MiB, {diff_stats['new_files']:,} new / "
               f"{diff_stats['removed_files']:,} removed files, {blob_note})")
+
+    all_warnings.extend(check_size_growth(config, curr_stats, prev_stats, diff_stats))
+    all_warnings.extend(check_file_count_growth(config, curr_files, prev_files, diff_stats))
+    all_warnings.extend(check_new_extensions(config, curr_exts, prev_exts))
+    all_warnings.extend(check_total_size(config, curr_stats, diff_stats))
+
+    if prev_snapshot:
         all_warnings.extend(check_new_files_absolute(config, diff_stats))
         all_warnings.extend(check_added_size(config, diff_stats))
         all_warnings.extend(check_removed_size(config, diff_stats))
@@ -660,13 +1011,17 @@ def main():
     details = build_details(
         _PROFILE_NAME, current_snapshot, prev_snapshot, all_warnings, diff_stats
     )
+    details_html = build_details_html(
+        _PROFILE_NAME, current_snapshot, prev_snapshot, all_warnings, diff_stats
+    )
     context = {
-        "title":      title,
-        "message":    message,
-        "details":    details,
-        "profile":    _PROFILE_NAME,
-        "status":     status,
-        "violations": str(len(all_warnings)),
+        "title":        title,
+        "message":      message,
+        "details":      details,
+        "details_html": details_html,
+        "profile":      _PROFILE_NAME,
+        "status":       status,
+        "violations":   str(len(all_warnings)),
     }
 
     write_log(args.log, details, args.log_keep_runs)
