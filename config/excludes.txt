@@ -69,6 +69,23 @@ checkpoints/
 *.iml
 .vscode/
 
+# === Emacs native compilation cache (Emacs 28+, heavily used in 30.x) ===
+eln-cache/
+
+# === Emacs backup files and auto-saves ===
+*~
+tmp/auto-saves/
+
+# === Emacs default auto-save / lock files ===
+#*#
+.#*
+
+# === Vim swap files ===
+*.sw?
+
+# === Vim session files ===
+Session.vim
+
 # === Misc ===
 *.log
 *.tmp

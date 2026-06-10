@@ -689,7 +689,8 @@ ul.files{margin:8px 0 0;padding:0;list-style:none;
 .step{margin:0 0 12px}
 .step .cmt{font-size:13px;color:#57606a;margin-bottom:4px}
 pre{margin:0;background:#0d1117;color:#e6edf3;border-radius:6px;padding:10px 12px;
-  overflow-x:auto;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+  white-space:pre-wrap;word-break:break-all;overflow-wrap:anywhere;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
 .remediate{border-left:4px solid #d4a72c;background:#fffbef;padding:12px 16px;
   border-radius:4px}
 .note{font-size:12px;color:#9a6700;margin-bottom:10px}
