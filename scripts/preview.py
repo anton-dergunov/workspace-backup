@@ -8,7 +8,7 @@ Usage:
     restic-preview <source> [options]
 
 Options:
-    --exclude-file FILE      Exclude file (default: ~/.config/restic/excludes)
+    --exclude-file FILE      Exclude file (default: config/excludes.txt)
     --show included|excluded|both
     --min-size SIZE          e.g. 1MB, 500KB, 1024  (default: 0, show all)
     --summarize NAME         Directory name to summarize instead of listing in
@@ -36,7 +36,7 @@ except ImportError:
     sys.exit("Install pathspec:  pip install pathspec")
 
 
-DEFAULT_EXCLUDE = Path("~/.config/restic/excludes").expanduser()
+DEFAULT_EXCLUDE = Path(__file__).resolve().parent.parent / "config" / "excludes.txt"
 
 # ── File-type registry ────────────────────────────────────────────────────────
 # Each row: (category, extensions, ansi_code, emoji, html_color)

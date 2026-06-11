@@ -40,7 +40,7 @@ The repo includes `config/excludes.txt` as a starting point for Python and ML wo
 python scripts/preview.py <source-directory> [options]
 
 Options:
-  --exclude-file FILE       Path to exclude patterns (default: ~/.config/restic/excludes)
+  --exclude-file FILE       Path to exclude patterns (default: config/excludes.txt)
   --show included|excluded|both  What to display (default: both)
   --min-size SIZE           Skip files below this size (e.g. 1MB, 500KB)
   --summarize NAME          Collapse directories (e.g. .git); repeatable
