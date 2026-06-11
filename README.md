@@ -26,6 +26,8 @@ This repo adds two utilities to make managing restic backups easier.
 
 ### Preview script
 
+![Preview script](screenshots/preview_report.png)
+
 **Purpose:** walk a directory tree with your restic exclude file and report which files would be included vs excluded — *without needing a configured restic repository*.
 
 The goal is to curate your exclude file so the restic repository stays small. ML and research workspaces especially accumulate large artifacts (`.ckpt`, `.pt`, `.safetensors`, model caches, datasets) that should be excluded.
@@ -59,6 +61,8 @@ python scripts/preview.py ~/projects --min-size 50MB
 ```
 
 ### Guardrails
+
+![Preview script](screenshots/guardrail_report.png)
 
 A resticprofile `run-after` hook that warns when something unusual happened in a backup. Run after every successful backup; exits non-zero on violation so resticprofile marks the job as failed.
 
